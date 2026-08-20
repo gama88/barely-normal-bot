@@ -21,7 +21,7 @@ Instagram page about trending entertainment, pop culture, and sports news.
 
 Voice: deadpan, a little absurd, extremely online but not cringe. Sharp
 observations, unexpected angles. Think group-chat-funny, not late-night-
-monologue funny. At most one emoji, and only if it genuinely lands.
+monologue funny.
 
 Hard rules:
 - Never punch down. Joke about situations, fame, and absurdity — not about
@@ -31,21 +31,70 @@ Hard rules:
   mark it unusable instead of forcing a joke.
 - No made-up facts. The joke must work with only what the headline says.
 - Keep it clean enough for Instagram (no slurs, no explicit content).
+- NO EMOJI in "hook" or "punchline" — those are rendered with fonts that have
+  no emoji glyphs and would show as empty boxes. A single emoji in "caption"
+  is fine.
+- Respect the length limits exactly: hook <= 60 characters, punchline <= 120.
+  Longer text overflows the video frame.
 """
 
-# Subreddit-style topic sources: Google News RSS sections (no API key needed)
+# Topic sources: Google News RSS sections (no API key needed)
 NEWS_FEEDS = {
     "entertainment": "https://news.google.com/rss/headlines/section/topic/ENTERTAINMENT?hl=en-US&gl=US&ceid=US:en",
     "sports": "https://news.google.com/rss/headlines/section/topic/SPORTS?hl=en-US&gl=US&ceid=US:en",
     "top": "https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en",
 }
 
-# Headlines containing these words are skipped before Claude ever sees them.
+# --- Tragedy pre-filter -----------------------------------------------------
+# Headlines matching these are dropped before Claude ever sees them. Claude's
+# own "usable: false" judgement is the second layer, not the only one.
+#
+# Two lists because matching mode matters:
+#   BLOCKED_WORDS    — exact whole-word match (safe for short/ambiguous words)
+#   BLOCKED_PREFIXES — token.startswith() (catches inflections: murdered,
+#                      murdering, murders). Only stems with no benign English
+#                      word sharing the prefix belong here — e.g. "war" must
+#                      NOT be a prefix or it would block "Warriors".
 BLOCKED_WORDS = {
-    "dies", "died", "dead", "death", "killed", "kills", "murder", "shooting",
-    "shot", "suicide", "assault", "abuse", "victim", "autopsy", "overdose",
-    "crash", "funeral", "war", "hostage", "terror",
+    # death
+    "die", "dies", "died", "dying", "dead", "death", "deaths",
+    "kill", "kills", "killed", "killing", "killings", "killer", "killers",
+    "fatal", "fatally", "fatality", "fatalities", "deceased", "passing",
+    # violence / crime
+    "shot", "shots", "gunman", "gunmen", "gunfire", "assault", "assaulted",
+    "attack", "attacked", "attacker", "abuse", "abused", "abusive",
+    "victim", "victims", "arrested", "charged", "convicted", "sentenced",
+    "guilty", "verdict", "trial", "lawsuit", "indicted", "indictment",
+    "prison", "jailed", "manslaughter", "assailant",
+    # disaster
+    "crash", "crashes", "crashed", "collision", "explosion", "explosions",
+    "wildfire", "earthquake", "hurricane", "flood", "floods", "famine",
+    "war", "wars", "warfare", "hostage", "hostages", "refugee", "refugees",
+    "evacuated", "evacuation", "wounded", "injured", "injuries", "injury",
+    # health / grief
+    "cancer", "tumor", "illness", "hospitalized", "hospitalised", "coma",
+    "diagnosis", "diagnosed", "funeral", "memorial", "mourns", "mourning",
+    "grief", "grieving", "obituary", "tribute", "tributes", "condolences",
+    "missing", "disappearance", "rescued",
 }
+
+BLOCKED_PREFIXES = (
+    "murder",       # murder, murdered, murdering, murders, murderer
+    "homicid",      # homicide, homicidal
+    "suicid",       # suicide, suicidal
+    "terror",       # terror, terrorist, terrorism, terrorized
+    "kidnap",       # kidnap, kidnapped, kidnapping
+    "stab",         # stab, stabbed, stabbing  (no benign "stab*" in headlines)
+    "shooting",     # shooting, shootings
+    "overdos",      # overdose, overdosed, overdoses
+    "autops",       # autopsy, autopsies
+    "massacr",      # massacre, massacred
+    "traffick",     # trafficking, trafficked
+    "molest",       # molest, molested, molestation
+    "abduct",       # abduct, abducted, abduction
+    "tragic", "tragedy", "tragedies",
+    "bombing",      # bombing, bombings ("bomb" alone hits "bombshell")
+)
 
 # Video settings for the Blender reel
 REEL = {
@@ -54,3 +103,9 @@ REEL = {
     "fps": 30,
     "seconds": 7,
 }
+
+# Hard limits enforced in code (not just requested of the model)
+MAX_HOOK_CHARS = 60
+MAX_PUNCH_CHARS = 120
+MAX_CAPTION_CHARS = 2000     # Instagram hard limit is 2200 incl. hashtags
+MAX_HASHTAGS = 25            # Instagram hard limit is 30

@@ -6,9 +6,17 @@ Runs INSIDE Blender's Python, headless:
 The config JSON carries the text, colors, and output path (written by bot.py).
 The whole scene is built procedurally so no .blend file needs to live in git.
 
-Design: orthographic camera (framing is deterministic — no lens surprises),
-extruded 3D text that scales in, emissive floating shapes drifting behind it,
-slow zoom, bloom via the compositor when available.
+Framing note (this bit is easy to get wrong):
+Blender's `ortho_scale` sizes the axis chosen by `sensor_fit`. With the default
+'AUTO' and a PORTRAIT render (1080x1920), AUTO resolves to VERTICAL, so
+ortho_scale would become the frame HEIGHT and the frame would be only
+0.5625 * ortho_scale wide. We force sensor_fit='HORIZONTAL' so ortho_scale is
+the WIDTH, which is what every coordinate below is designed against:
+    width  = ortho_scale                      = 10.0
+    height = ortho_scale * (1920/1080)        = 17.78
+    so x in [-5.0, +5.0], z in [-8.89, +8.89]
+Instagram overlays its UI over roughly the bottom 20% and top 10% of a Reel,
+so all content is kept inside z in [-5.3, +7.1].
 """
 
 import json
@@ -19,11 +27,19 @@ import sys
 
 import bpy
 
+# Approximate glyph advance as a fraction of font size, used to predict
+# wrapping so text can be auto-shrunk to fit its vertical budget.
+ADVANCE_UPPER = 0.70
+ADVANCE_MIXED = 0.55
+MIN_TEXT_SIZE = 0.28
+
 
 def hex_to_rgba(hex_color, alpha=1.0):
     h = hex_color.lstrip("#")
     r, g, b = (int(h[i:i + 2], 16) / 255 for i in (0, 2, 4))
-    # rough sRGB -> linear so colors don't wash out in render
+    # sRGB -> linear. Only correct if the view transform is 'Standard',
+    # which main() sets below (Blender 4.x defaults to AgX, which would
+    # desaturate the brand palette).
     lin = [c ** 2.2 for c in (r, g, b)]
     return (*lin, alpha)
 
@@ -43,6 +59,26 @@ def pick_font(candidates):
             except Exception:
                 continue
     return None  # Blender's built-in font
+
+
+def fit_size(text, base_size, box_width, budget_height, upper):
+    """Shrink font size until the wrapped block fits its vertical budget.
+
+    Blender text boxes wrap but never scale glyphs, so without this a long
+    hook silently grows downward through the punchline below it.
+    """
+    if not text:
+        return base_size
+    advance = ADVANCE_UPPER if upper else ADVANCE_MIXED
+    size = base_size
+    for _ in range(12):
+        chars_per_line = max(1, int(box_width / (size * advance)))
+        lines = max(1, math.ceil(len(text) / chars_per_line))
+        height = lines * size          # space_line defaults to 1.0
+        if height <= budget_height or size <= MIN_TEXT_SIZE:
+            break
+        size = max(MIN_TEXT_SIZE, size * math.sqrt(budget_height / height))
+    return size
 
 
 def make_emission_material(name, rgba, strength):
@@ -106,6 +142,15 @@ def main():
     except Exception:
         pass
 
+    # Blender 4.x defaults to the AgX view transform, which desaturates the
+    # neon brand colors into near-white. 'Standard' is the true inverse of
+    # the sRGB->linear conversion in hex_to_rgba, so hex values land exactly.
+    try:
+        scene.view_settings.view_transform = "Standard"
+        scene.view_settings.look = "None"
+    except Exception as exc:
+        print(f"view transform not set: {exc}")
+
     fps = cfg["fps"]
     total = fps * cfg["seconds"]
     scene.render.resolution_x = cfg["width"]
@@ -128,19 +173,19 @@ def main():
     scene.world = world
 
     # --- camera: orthographic for deterministic framing ---
-    # Visible area: ortho_scale wide, ortho_scale * (h/w) tall.
     cam_data = bpy.data.cameras.new("Cam")
     cam_data.type = "ORTHO"
+    # MUST be HORIZONTAL — see the framing note at the top of this file.
+    cam_data.sensor_fit = "HORIZONTAL"
     cam = bpy.data.objects.new("Cam", cam_data)
     cam.location = (0, -10, 0)
     cam.rotation_euler = (math.pi / 2, 0, 0)
     bpy.context.collection.objects.link(cam)
     scene.camera = cam
-    cam_data.ortho_scale = 10.7
+    cam_data.ortho_scale = 10.7          # frame width at start
     cam_data.keyframe_insert("ortho_scale", frame=1)
     cam_data.ortho_scale = 10.0          # slow zoom-in over the whole clip
     cam_data.keyframe_insert("ortho_scale", frame=total)
-    # visible height at end: 10.0 * (1920/1080) ≈ 17.8 world units
 
     # --- lights ---
     key = bpy.data.lights.new("Key", type="AREA")
@@ -164,12 +209,18 @@ def main():
     accent_mat = make_emission_material("Accent", accent_rgba, 4.0)
     accent2_mat = make_emission_material("Accent2", accent2_rgba, 4.0)
 
-    # --- text (visible height ~17.8, so z range ~[-8.9, +8.9]) ---
-    hook = add_text("Hook", cfg["hook"], size=0.95, z=4.6, width=8.8,
+    # --- text ---
+    # Safe zone is z in [-5.3, +7.1]. Hook is top-anchored at 5.5 and may grow
+    # down to 0.5 (budget 5.0); punchline top-anchored at -0.8, budget 3.0.
+    hook_w, punch_w = 8.4, 8.0
+    hook_size = fit_size(cfg["hook"], 0.90, hook_w, 5.0, upper=True)
+    punch_size = fit_size(cfg["punchline"], 0.50, punch_w, 3.0, upper=False)
+
+    hook = add_text("Hook", cfg["hook"], size=hook_size, z=5.5, width=hook_w,
                     font=font, material=text_mat, extrude=0.07, upper=True)
-    punch = add_text("Punch", cfg["punchline"], size=0.52, z=-0.6, width=8.2,
-                     font=font, material=text_mat, extrude=0.03)
-    add_text("Handle", cfg["handle"], size=0.30, z=-7.7, width=9.0,
+    punch = add_text("Punch", cfg["punchline"], size=punch_size, z=-0.8,
+                     width=punch_w, font=font, material=text_mat, extrude=0.03)
+    add_text("Handle", cfg["handle"], size=0.30, z=-4.6, width=9.0,
              font=font, material=accent_mat, extrude=0.01)
 
     scale_in(hook, 1, int(fps * 0.55))
@@ -191,7 +242,6 @@ def main():
                 major_radius=s, minor_radius=s * 0.3, location=(x, y, z))
         shape = bpy.context.active_object
         shape.data.materials.append(accent_mat if i % 2 else accent2_mat)
-        # slow tumble + drift
         shape.rotation_euler = (0, 0, 0)
         shape.keyframe_insert("rotation_euler", frame=1)
         shape.rotation_euler = (random.uniform(1, 3), random.uniform(1, 3), 0)
@@ -206,6 +256,9 @@ def main():
                     kp.interpolation = "LINEAR"
 
     # --- bloom via compositor (best effort; API drifts across versions) ---
+    # On failure we MUST switch compositing back off: a half-built node tree
+    # with no Composite output renders 100% black frames while still
+    # "succeeding", which the caller cannot detect.
     try:
         scene.use_nodes = True
         tree = scene.node_tree
@@ -223,9 +276,13 @@ def main():
         tree.links.new(glare.outputs["Image"], comp.inputs["Image"])
     except Exception as exc:
         print(f"compositor bloom skipped: {exc}")
+        scene.use_nodes = False        # roll back, else frames render black
 
     # --- output ---
+    # Render under a run-unique prefix so a stale mp4 left in the directory
+    # can never be mistaken for this render's output.
     out_dir = cfg["out_dir"]
+    prefix = f"render_{cfg.get('seed', 0)}_"
     scene.render.image_settings.file_format = "FFMPEG"
     scene.render.ffmpeg.format = "MPEG4"
     scene.render.ffmpeg.codec = "H264"
@@ -233,14 +290,18 @@ def main():
         scene.render.ffmpeg.constant_rate_factor = "HIGH"
     except Exception:
         pass
-    scene.render.filepath = os.path.join(out_dir, "reel")
+    scene.render.filepath = os.path.join(out_dir, prefix)
 
     bpy.ops.render.render(animation=True)
 
-    # Blender appends frame ranges to the filename; normalize it.
-    produced = [f for f in os.listdir(out_dir) if f.endswith(".mp4")]
+    # Blender appends the frame range to the filename; match on our prefix and
+    # sort so selection is deterministic (os.listdir order is arbitrary).
+    produced = sorted(
+        f for f in os.listdir(out_dir)
+        if f.startswith(prefix) and f.endswith(".mp4")
+    )
     if not produced:
-        raise RuntimeError("Blender render produced no mp4")
+        raise RuntimeError(f"Blender render produced no mp4 matching {prefix!r}")
     os.replace(os.path.join(out_dir, produced[0]),
                os.path.join(out_dir, "reel_final.mp4"))
     print("RENDER_OK")

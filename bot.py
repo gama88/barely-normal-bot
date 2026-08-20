@@ -36,12 +36,39 @@ GRAPH = "https://graph.instagram.com/v21.0"
 USER_AGENT = "Mozilla/5.0 (barely-normal-bot/2.0)"
 MAX_TOPICS_TO_TRY = 3
 BLENDER_TIMEOUT_SECONDS = 3000
+FFMPEG_TIMEOUT_SECONDS = 300
+CONTAINER_POLL_SECONDS = 600
+MAX_CONSECUTIVE_POLL_ERRORS = 3
+
+REQUIRED_ENV = ("IG_ACCESS_TOKEN", "IG_USER_ID", "CLOUDINARY_URL",
+                "ANTHROPIC_API_KEY")
 
 FONT_CANDIDATES = [
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",   # GitHub Actions
     r"C:\Windows\Fonts\arialbd.ttf",                          # local Windows
     r"C:\Windows\Fonts\impact.ttf",
 ]
+
+# Fonts used for rendering have no emoji glyphs — emoji would draw as empty
+# boxes, so they are stripped from any text that gets rasterized.
+EMOJI_RE = re.compile(
+    "["
+    "\U0001F000-\U0001FAFF"
+    "\U00002600-\U000027BF"
+    "\U00002B00-\U00002BFF"
+    "\U0000FE00-\U0000FE0F"
+    "\U0001F1E6-\U0001F1FF"
+    "]+"
+)
+
+
+class PublishedError(RuntimeError):
+    """Raised after Instagram has (or may have) accepted a publish.
+
+    Signals that the run must stop rather than try another topic — retrying
+    would put a second post on the account the same day.
+    """
+
 
 # --------------------------------------------------------------- helpers ---
 
@@ -58,9 +85,21 @@ def load_env_file():
         os.environ.setdefault(key.strip(), value.strip())
 
 
+def require_env():
+    """Fail fast before spending a Claude call and a multi-minute render."""
+    missing = [k for k in REQUIRED_ENV if not os.environ.get(k)]
+    if missing:
+        print(f"error: missing required environment variables: "
+              f"{', '.join(missing)}")
+        sys.exit(1)
+
+
 def load_posted():
     if POSTED_FILE.exists():
-        return set(json.loads(POSTED_FILE.read_text()))
+        try:
+            return set(json.loads(POSTED_FILE.read_text()))
+        except json.JSONDecodeError:
+            print("warning: posted.json unreadable, treating as empty")
     return set()
 
 
@@ -71,6 +110,16 @@ def save_posted(posted):
 def headline_key(title):
     normalized = re.sub(r"[^a-z0-9 ]", "", title.lower()).strip()
     return hashlib.sha1(normalized.encode()).hexdigest()[:16]
+
+
+def clean_text(text, limit):
+    """Strip emoji, collapse whitespace, and hard-clamp to `limit` chars."""
+    text = EMOJI_RE.sub("", text or "")
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) > limit:
+        clipped = text[:limit].rsplit(" ", 1)[0]
+        text = (clipped or text[:limit]).rstrip(",;:. ") + "…"
+    return text
 
 
 # -------------------------------------------------------------- trending ---
@@ -98,15 +147,27 @@ def fetch_headlines():
     return headlines
 
 
+def is_blocked(title):
+    """True if the headline looks like tragedy/crime and must not be a joke."""
+    # Apostrophes are stripped rather than kept in the token, so possessives
+    # ("victim's") normalize to the base word and still match.
+    tokens = re.findall(r"[a-z]+", title.lower().replace("'", "").replace("\u2019", ""))
+    for tok in tokens:
+        if tok in brand.BLOCKED_WORDS:
+            return True
+        if tok.startswith(brand.BLOCKED_PREFIXES):
+            return True
+    return False
+
+
 def pick_topics(headlines, posted):
-    """Filter blocked/used headlines, keep feed variety, best first."""
+    """Filter blocked/used headlines, dedupe, best first."""
     seen, picked = set(), []
     for h in headlines:
         key = headline_key(h["title"])
-        words = set(re.findall(r"[a-z']+", h["title"].lower()))
         if key in posted or key in seen:
             continue
-        if words & brand.BLOCKED_WORDS:
+        if is_blocked(h["title"]):
             continue
         seen.add(key)
         picked.append({**h, "key": key})
@@ -124,20 +185,24 @@ POST_SCHEMA = {
         },
         "hook": {
             "type": "string",
-            "description": "Short punchy setup shown large on screen, max 60 chars",
+            "maxLength": brand.MAX_HOOK_CHARS,
+            "description": "Short punchy setup shown large on screen. No emoji.",
         },
         "punchline": {
             "type": "string",
-            "description": "The joke/take, max 120 chars",
+            "maxLength": brand.MAX_PUNCH_CHARS,
+            "description": "The joke/take. No emoji.",
         },
         "caption": {
             "type": "string",
+            "maxLength": 600,
             "description": "1-2 sentence Instagram caption continuing the bit",
         },
         "hashtags": {
             "type": "array",
             "items": {"type": "string"},
-            "description": "5-8 relevant hashtags without the # symbol",
+            "maxItems": brand.MAX_HASHTAGS,
+            "description": "5-8 relevant single-word hashtags without the # symbol",
         },
     },
     "required": ["usable", "hook", "punchline", "caption", "hashtags"],
@@ -170,18 +235,22 @@ def write_post(headline):
     if not post.get("usable"):
         print(f"claude declined headline: {headline['title']!r}")
         return None
+
+    # Enforce limits in code — schema descriptions alone don't guarantee them.
+    post["hook"] = clean_text(post["hook"], brand.MAX_HOOK_CHARS)
+    post["punchline"] = clean_text(post["punchline"], brand.MAX_PUNCH_CHARS)
+    if not post["hook"] or not post["punchline"]:
+        print("claude returned empty hook/punchline after cleaning")
+        return None
     return post
 
 
 def canned_post(headline):
     """Offline stand-in for --dry-run without an API key."""
-    hook = headline["title"]
-    if len(hook) > 60:
-        hook = hook[:60].rsplit(" ", 1)[0] + "…"
     return {
         "usable": True,
-        "hook": hook,
-        "punchline": "This is a dry-run placeholder joke. The real one comes from Claude.",
+        "hook": clean_text(headline["title"], brand.MAX_HOOK_CHARS),
+        "punchline": "Dry-run placeholder. The real joke comes from Claude.",
         "caption": "Dry-run caption. Nothing was posted.",
         "hashtags": ["memes", "entertainment", "trending"],
     }
@@ -191,8 +260,14 @@ def canned_post(headline):
 
 
 def find_blender():
-    if os.environ.get("BLENDER_PATH"):
-        return os.environ["BLENDER_PATH"]
+    override = os.environ.get("BLENDER_PATH")
+    if override:
+        # A stale BLENDER_PATH must not raise FileNotFoundError later; treat
+        # a bad override as "no blender" so the card fallback still works.
+        if os.path.exists(override):
+            return override
+        print(f"warning: BLENDER_PATH does not exist: {override}")
+        return None
     return shutil.which("blender")
 
 
@@ -221,8 +296,8 @@ def render_reel(post, work_dir):
              "--", str(cfg_path)],
             capture_output=True, text=True, timeout=BLENDER_TIMEOUT_SECONDS,
         )
-    except subprocess.TimeoutExpired:
-        print("blender render timed out — falling back to static card")
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"blender render failed to run ({exc}) — falling back to card")
         return None
     if result.returncode != 0 or "RENDER_OK" not in result.stdout:
         print("blender render failed — falling back to static card")
@@ -231,14 +306,23 @@ def render_reel(post, work_dir):
         return None
 
     raw = work_dir / "reel_final.mp4"
+    if not raw.exists():
+        print("blender reported success but produced no file — using card")
+        return None
+
     final = work_dir / "reel_audio.mp4"
     # Instagram is happier with an audio stream present; add silence.
-    mux = subprocess.run(
-        ["ffmpeg", "-y", "-i", str(raw),
-         "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
-         "-c:v", "copy", "-c:a", "aac", "-shortest", str(final)],
-        capture_output=True, text=True,
-    )
+    try:
+        mux = subprocess.run(
+            ["ffmpeg", "-y", "-i", str(raw),
+             "-f", "lavfi",
+             "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+             "-c:v", "copy", "-c:a", "aac", "-shortest", str(final)],
+            capture_output=True, text=True, timeout=FFMPEG_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"warning: silent-audio mux unavailable ({exc}), using video as-is")
+        return raw
     if mux.returncode != 0:
         print("warning: silent-audio mux failed, using video as-is")
         return raw
@@ -268,11 +352,25 @@ def upload_to_cloudinary(path, kind):
 
 
 def build_caption(post):
-    tags = " ".join(f"#{t.lstrip('#')}" for t in post["hashtags"])
-    return f"{post['caption']}\n\n{tags}"
+    tags = []
+    for raw in post.get("hashtags", []):
+        # "pop culture" would post as #pop plus loose words — collapse it.
+        tag = re.sub(r"[^0-9A-Za-z_]", "", str(raw).lstrip("#"))
+        if tag:
+            tags.append(f"#{tag}")
+        if len(tags) >= brand.MAX_HASHTAGS:
+            break
+    caption = clean_text(post["caption"], brand.MAX_CAPTION_CHARS)
+    full = f"{caption}\n\n{' '.join(tags)}".strip()
+    return full[:2200]
 
 
-def post_to_instagram(kind, media_url, caption):
+def post_to_instagram(kind, media_url, caption, before_publish=None):
+    """Create the media container, wait for it, then publish.
+
+    `before_publish` runs immediately before the irreversible publish call so
+    the caller can persist state first.
+    """
     token = os.environ["IG_ACCESS_TOKEN"]
     ig_user_id = os.environ["IG_USER_ID"]
 
@@ -287,14 +385,26 @@ def post_to_instagram(kind, media_url, caption):
     resp.raise_for_status()
     container_id = resp.json()["id"]
 
-    deadline = time.time() + 600
+    deadline = time.time() + CONTAINER_POLL_SECONDS
+    errors = 0
     while time.time() < deadline:
-        status = requests.get(
-            f"{GRAPH}/{container_id}",
-            params={"fields": "status_code", "access_token": token},
-            timeout=30,
-        )
-        status.raise_for_status()
+        try:
+            status = requests.get(
+                f"{GRAPH}/{container_id}",
+                params={"fields": "status_code", "access_token": token},
+                timeout=30,
+            )
+            status.raise_for_status()
+            errors = 0
+        except requests.RequestException as exc:
+            # A transient 5xx shouldn't discard a container that is still
+            # processing normally.
+            errors += 1
+            if errors > MAX_CONSECUTIVE_POLL_ERRORS:
+                raise
+            print(f"warning: status poll failed ({exc}), retrying")
+            time.sleep(10)
+            continue
         code = status.json().get("status_code")
         if code == "FINISHED":
             break
@@ -304,13 +414,23 @@ def post_to_instagram(kind, media_url, caption):
     else:
         raise RuntimeError("Timed out waiting for Instagram media container")
 
-    publish = requests.post(
-        f"{GRAPH}/{ig_user_id}/media_publish",
-        data={"creation_id": container_id, "access_token": token},
-        timeout=60,
-    )
-    publish.raise_for_status()
-    return publish.json()["id"]
+    if before_publish:
+        before_publish()
+
+    # Past this point Instagram may have created the post even if we fail to
+    # read the response, so every error is raised as PublishedError to stop
+    # the run instead of publishing a second topic.
+    try:
+        publish = requests.post(
+            f"{GRAPH}/{ig_user_id}/media_publish",
+            data={"creation_id": container_id, "access_token": token},
+            timeout=120,
+        )
+        publish.raise_for_status()
+        return publish.json()["id"]
+    except Exception as exc:
+        raise PublishedError(f"publish may have succeeded but failed to "
+                             f"confirm: {exc}") from exc
 
 
 # ------------------------------------------------------------------ main ---
@@ -346,10 +466,16 @@ def run_one(topic, work_dir, dry_run):
         return True
 
     media_url = upload_to_cloudinary(media, kind)
-    media_id = post_to_instagram(kind, media_url, caption)
-    posted = load_posted()
-    posted.add(topic["key"])
-    save_posted(posted)
+
+    def record():
+        # Persist BEFORE publishing: a lost dedupe record is worse than a
+        # burned topic, because it can produce a duplicate post later.
+        posted = load_posted()
+        posted.add(topic["key"])
+        save_posted(posted)
+
+    media_id = post_to_instagram(kind, media_url, caption,
+                                 before_publish=record)
     print(f"Posted! media id {media_id}")
     return True
 
@@ -357,6 +483,8 @@ def run_one(topic, work_dir, dry_run):
 def main():
     dry_run = "--dry-run" in sys.argv
     load_env_file()
+    if not dry_run:
+        require_env()
 
     posted = load_posted()
     topics = pick_topics(fetch_headlines(), posted)
@@ -365,10 +493,18 @@ def main():
         sys.exit(1)
 
     with tempfile.TemporaryDirectory() as tmp:
-        for topic in topics[:MAX_TOPICS_TO_TRY]:
+        for index, topic in enumerate(topics[:MAX_TOPICS_TO_TRY]):
+            # A fresh directory per attempt: sharing one lets a stale render
+            # from a failed attempt be published with the next topic's caption.
+            work_dir = Path(tmp) / f"attempt{index}"
+            work_dir.mkdir(parents=True, exist_ok=True)
             try:
-                if run_one(topic, Path(tmp), dry_run):
+                if run_one(topic, work_dir, dry_run):
                     return
+            except PublishedError as exc:
+                print(f"error: {exc}")
+                print("Stopping: a publish was already issued this run.")
+                sys.exit(1)
             except Exception as exc:
                 print(f"warning: topic failed ({topic['title']!r}): {exc}")
 
