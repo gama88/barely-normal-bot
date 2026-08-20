@@ -1,0 +1,5 @@
+# Keep LF in the repo so the Linux CI runner gets valid shell scripts.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.mp4 binary

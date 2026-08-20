@@ -1,0 +1,77 @@
+name: Daily Instagram Post
+
+on:
+  schedule:
+    - cron: "0 17 * * *"   # ~noon US Central, daily
+  workflow_dispatch: {}     # allow manual runs from the Actions tab
+
+permissions:
+  contents: write           # to commit posted.json back
+
+env:
+  BLENDER_VERSION: "4.5.12"
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb libxi6 libxxf86vm1 libxfixes3 \
+            libxrender1 libgl1 libxkbcommon0 libsm6 libice6 ffmpeg
+          pip install -r requirements.txt
+
+      - name: Cache Blender
+        id: cache-blender
+        uses: actions/cache@v4
+        with:
+          path: blender-${{ env.BLENDER_VERSION }}-linux-x64
+          key: blender-${{ env.BLENDER_VERSION }}-linux-x64
+
+      - name: Download Blender
+        if: steps.cache-blender.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          file="blender-${BLENDER_VERSION}-linux-x64.tar.xz"
+          # Official host first, then mirrors — some networks block download.blender.org.
+          urls=(
+            "https://download.blender.org/release/Blender4.5/${file}"
+            "https://mirrors.dotsrc.org/blender/blender-release/Blender4.5/${file}"
+            "https://ftp.nluug.nl/pub/graphics/blender/release/Blender4.5/${file}"
+          )
+          for url in "${urls[@]}"; do
+            echo "Trying ${url}"
+            if curl -fsSL --retry 3 --connect-timeout 20 "${url}" -o blender.tar.xz; then
+              echo "Downloaded from ${url}"
+              tar -xf blender.tar.xz && rm blender.tar.xz
+              exit 0
+            fi
+          done
+          echo "All Blender download sources failed" >&2
+          exit 1
+
+      - name: Add Blender to PATH
+        run: echo "$PWD/blender-${BLENDER_VERSION}-linux-x64" >> "$GITHUB_PATH"
+
+      - name: Run bot
+        env:
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+          IG_USER_ID: ${{ secrets.IG_USER_ID }}
+          CLOUDINARY_URL: ${{ secrets.CLOUDINARY_URL }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: xvfb-run -a python bot.py
+
+      - name: Commit posted history
+        run: |
+          git config user.name "ig-bot"
+          git config user.email "actions@github.com"
+          git add posted.json
+          git diff --cached --quiet || git commit -m "Record today's post"
+          git push

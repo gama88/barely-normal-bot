@@ -1,0 +1,4 @@
+requests>=2.31
+cloudinary>=1.40
+anthropic>=0.40
+pillow>=10.0
