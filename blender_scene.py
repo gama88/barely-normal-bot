@@ -112,6 +112,11 @@ def add_text(name, body, size, z, width, font, material,
     curve.materials.append(material)
     obj = bpy.data.objects.new(name, curve)
     obj.location = (0, 0, z)
+    # Font curves are built lying flat in the XY plane. The camera looks
+    # along +Y, so without this the text is seen edge-on and renders as thin
+    # horizontal bars. Rotating +90 deg about X stands it up in the XZ plane,
+    # facing the camera, with text flowing downward in -Z.
+    obj.rotation_euler = (math.pi / 2, 0, 0)
     bpy.context.collection.objects.link(obj)
     return obj
 
@@ -220,7 +225,7 @@ def main():
                     font=font, material=text_mat, extrude=0.07, upper=True)
     punch = add_text("Punch", cfg["punchline"], size=punch_size, z=-0.8,
                      width=punch_w, font=font, material=text_mat, extrude=0.03)
-    add_text("Handle", cfg["handle"], size=0.30, z=-4.6, width=9.0,
+    add_text("Handle", cfg["handle"], size=0.38, z=-4.6, width=9.5,
              font=font, material=accent_mat, extrude=0.01)
 
     scale_in(hook, 1, int(fps * 0.55))
@@ -229,9 +234,12 @@ def main():
     # --- floating emissive shapes behind the text ---
     for i in range(9):
         kind = random.choice(("ico", "cube", "torus"))
-        x = random.uniform(-4.5, 4.5)
+        # Keep the centre column clear: text boxes are up to 8.4 units wide
+        # (x in [-4.2, 4.2]), so shapes live out at the frame edges instead of
+        # glowing through the copy.
+        x = random.choice((-1, 1)) * random.uniform(3.6, 5.2)
         z = random.uniform(-8, 8)
-        y = random.uniform(2.5, 5.0)     # behind the text plane
+        y = random.uniform(3.5, 6.5)     # well behind the text plane
         s = random.uniform(0.15, 0.5)
         if kind == "ico":
             bpy.ops.mesh.primitive_ico_sphere_add(radius=s, location=(x, y, z))
