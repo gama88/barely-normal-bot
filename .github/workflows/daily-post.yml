@@ -7,6 +7,14 @@ on:
 
 permissions:
   contents: write           # to commit posted.json / history.json back
+  pages: write              # to deploy today's video to GitHub Pages
+  id-token: write           # required by actions/deploy-pages
+
+# One run at a time: two overlapping runs would fight over the Pages site
+# and could publish each other's video.
+concurrency:
+  group: daily-post
+  cancel-in-progress: false
 
 env:
   BLENDER_VERSION: "4.5.12"
@@ -14,6 +22,9 @@ env:
 jobs:
   post:
     runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
 
@@ -72,13 +83,31 @@ jobs:
       - name: Add Blender to PATH
         run: echo "$PWD/blender-${BLENDER_VERSION}-linux-x64" >> "$GITHUB_PATH"
 
-      - name: Run bot
+      - name: Write and render today's post
         env:
           IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
           IG_USER_ID: ${{ secrets.IG_USER_ID }}
-          CLOUDINARY_URL: ${{ secrets.CLOUDINARY_URL }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: xvfb-run -a python bot.py
+        run: xvfb-run -a python bot.py --prepare
+
+      # Instagram's API only accepts media from a public URL, so the rendered
+      # video is served from GitHub Pages. Each deploy replaces the whole
+      # site, so only today's file is ever public there.
+      - name: Upload media for Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Deploy media to Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: Publish to Instagram
+        env:
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+          IG_USER_ID: ${{ secrets.IG_USER_ID }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python bot.py --publish "${{ steps.deployment.outputs.page_url }}"
 
       - name: Commit posted history
         # always(): when a publish may have gone through but couldn't be

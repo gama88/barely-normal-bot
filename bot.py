@@ -1,17 +1,25 @@
 """Barely Normal Entertainment — daily original-content Instagram bot.
 
-Pipeline (runs once per day on GitHub Actions):
-  1. Pull trending headlines from Google News RSS (no API key needed)
-  2. Claude writes an original joke/take in the brand voice (brand.py)
-  3. Blender renders a branded vertical reel (blender_scene.py);
-     falls back to a Pillow static card if Blender is unavailable/fails
-  4. Media is uploaded to Cloudinary (Instagram needs a public URL)
-  5. Published to Instagram via the official Graph API (Instagram Login flow)
-  6. Topic recorded in posted.json so it's never reused
+Pipeline (runs once per day on GitHub Actions), in two phases:
+
+  prepare:
+    1. Pull trending headlines from Google News RSS (no API key needed)
+    2. Claude writes an original joke/take in the brand voice (brand.py)
+    3. Blender renders a branded vertical reel (blender_scene.py);
+       falls back to a Pillow static card if Blender is unavailable/fails
+    4. Media goes into site/ and the post is saved to pending.json
+
+  (the workflow deploys site/ to GitHub Pages — Instagram's API only
+   accepts media from a public URL)
+
+  publish:
+    5. Published to Instagram via the official Graph API (Instagram Login)
+    6. Topic recorded in posted.json / history.json so it's never reused
 
 Usage:
-    python bot.py            # post for real (needs env vars / .env)
-    python bot.py --dry-run  # write copy + render locally, publish nothing
+    python bot.py --dry-run             # write + render locally, post nothing
+    python bot.py --prepare             # phase 1 (CI)
+    python bot.py --publish <base_url>  # phase 2 (CI), base_url = Pages URL
 """
 
 import hashlib
@@ -33,6 +41,9 @@ import card_fallback
 import insights
 
 POSTED_FILE = Path(__file__).parent / "posted.json"
+PENDING_FILE = Path(__file__).parent / "pending.json"
+SITE_DIR = Path(__file__).parent / "site"
+URL_WAIT_SECONDS = 300
 GRAPH = "https://graph.instagram.com/v21.0"
 USER_AGENT = "Mozilla/5.0 (barely-normal-bot/2.0)"
 MAX_TOPICS_TO_TRY = 3
@@ -41,8 +52,7 @@ FFMPEG_TIMEOUT_SECONDS = 300
 CONTAINER_POLL_SECONDS = 600
 MAX_CONSECUTIVE_POLL_ERRORS = 3
 
-REQUIRED_ENV = ("IG_ACCESS_TOKEN", "IG_USER_ID", "CLOUDINARY_URL",
-                "ANTHROPIC_API_KEY")
+REQUIRED_ENV = ("IG_ACCESS_TOKEN", "IG_USER_ID", "ANTHROPIC_API_KEY")
 
 FONT_CANDIDATES = [
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",   # GitHub Actions
@@ -392,17 +402,26 @@ def render_card(post, work_dir):
 # ------------------------------------------------------------- instagram ---
 
 
-def upload_to_cloudinary(path, kind):
-    import cloudinary
-    import cloudinary.uploader
+def wait_for_public_url(url, kind):
+    """Block until GitHub Pages is actually serving the file.
 
-    cloudinary.config(cloudinary_url=os.environ["CLOUDINARY_URL"])
-    result = cloudinary.uploader.upload_large(
-        str(path),
-        resource_type="video" if kind == "video" else "image",
-        folder="ig-bot",
-    )
-    return result["secure_url"]
+    deploy-pages returns before the CDN has the new site everywhere; handing
+    Instagram the URL too early gets the container rejected.
+    """
+    expected = "video/" if kind == "video" else "image/"
+    deadline = time.time() + URL_WAIT_SECONDS
+    while time.time() < deadline:
+        try:
+            resp = requests.head(url, timeout=30, allow_redirects=True)
+            ctype = resp.headers.get("Content-Type", "")
+            if resp.status_code == 200 and ctype.startswith(expected):
+                print(f"media live at {url} ({ctype})")
+                return
+            print(f"waiting for media: HTTP {resp.status_code} {ctype}")
+        except requests.RequestException as exc:
+            print(f"waiting for media: {exc}")
+        time.sleep(10)
+    raise RuntimeError(f"media never became available at {url}")
 
 
 def build_caption(post):
@@ -490,13 +509,14 @@ def post_to_instagram(kind, media_url, caption, before_publish=None):
 # ------------------------------------------------------------------ main ---
 
 
-def run_one(topic, work_dir, dry_run):
+def make_post(topic, work_dir, dry_run):
+    """Write and render one post. Returns (post, kind, media, caption) or None."""
     if dry_run and not os.environ.get("ANTHROPIC_API_KEY"):
         post = canned_post(topic)
     else:
         post = write_post(topic)
     if post is None:
-        return False
+        return None
 
     media = render_reel(post, work_dir)
     kind = "video"
@@ -510,16 +530,78 @@ def run_one(topic, work_dir, dry_run):
     print(f"punch:   {post['punchline']}")
     print(f"media:   {kind} -> {media}")
     print(f"caption:\n{caption}")
+    return post, kind, media, caption
 
-    if dry_run:
-        out_dir = Path(__file__).parent / "out"
-        out_dir.mkdir(exist_ok=True)
-        kept = out_dir / f"preview{media.suffix}"
-        shutil.copy(media, kept)
-        print(f"DRY RUN — preview saved to {kept}, nothing posted.")
-        return True
 
-    media_url = upload_to_cloudinary(media, kind)
+def stage_for_pages(topic, post, kind, media, caption):
+    """Put the media in site/ for the Pages deploy and save the pending post."""
+    if SITE_DIR.exists():
+        shutil.rmtree(SITE_DIR)
+    SITE_DIR.mkdir()
+    # The filename is the topic key, so each day's URL is new and no CDN or
+    # Instagram-side cache can serve yesterday's video under today's caption.
+    filename = f"{topic['key']}{media.suffix}"
+    shutil.copy(media, SITE_DIR / filename)
+    (SITE_DIR / "index.html").write_text(
+        "<!doctype html><title>Barely Normal</title>", encoding="utf-8")
+    PENDING_FILE.write_text(json.dumps({
+        "topic": topic, "post": post, "kind": kind,
+        "caption": caption, "filename": filename,
+    }, indent=2, ensure_ascii=False), encoding="utf-8")
+    print(f"staged {filename} for publishing")
+
+
+def prepare(dry_run):
+    """Phase 1: pick a topic, write it, render it. Nothing is published here,
+    so retrying the next topic after a failure is always safe."""
+    if PENDING_FILE.exists():
+        PENDING_FILE.unlink()
+
+    topics = pick_topics(fetch_headlines(), load_posted())
+    if not topics:
+        print("No usable headlines found today.")
+        sys.exit(1)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        for index, topic in enumerate(topics[:MAX_TOPICS_TO_TRY]):
+            # A fresh directory per attempt so a stale render can never be
+            # picked up for the next topic.
+            work_dir = Path(tmp) / f"attempt{index}"
+            work_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                made = make_post(topic, work_dir, dry_run)
+                if made is None:
+                    continue
+                post, kind, media, caption = made
+                if dry_run:
+                    out_dir = Path(__file__).parent / "out"
+                    out_dir.mkdir(exist_ok=True)
+                    kept = out_dir / f"preview{media.suffix}"
+                    shutil.copy(media, kept)
+                    print(f"DRY RUN — preview saved to {kept}, nothing posted.")
+                else:
+                    stage_for_pages(topic, post, kind, media, caption)
+                return
+            except Exception as exc:
+                print(f"warning: topic failed ({topic['title']!r}): {exc}")
+
+    print("error: all attempted topics failed")
+    sys.exit(1)
+
+
+def publish(base_url):
+    """Phase 2: post the staged media, now live on GitHub Pages.
+
+    Exactly one attempt. If it fails before the publish call, nothing is
+    posted and the topic stays unused for tomorrow.
+    """
+    if not PENDING_FILE.exists():
+        print("error: nothing staged — run --prepare first")
+        sys.exit(1)
+    pending = json.loads(PENDING_FILE.read_text(encoding="utf-8"))
+    topic, post = pending["topic"], pending["post"]
+    kind, caption = pending["kind"], pending["caption"]
+    url = f"{base_url.rstrip('/')}/{pending['filename']}"
 
     def record():
         # Persist BEFORE publishing: a lost dedupe record is worse than a
@@ -529,23 +611,34 @@ def run_one(topic, work_dir, dry_run):
         save_posted(posted)
         insights.add_record(topic, post, kind, caption)
 
-    media_id = post_to_instagram(kind, media_url, caption,
-                                 before_publish=record)
+    try:
+        wait_for_public_url(url, kind)
+        media_id = post_to_instagram(kind, url, caption, before_publish=record)
+    except PublishedError as exc:
+        print(f"error: {exc}")
+        print("The post may be live; it's recorded so it won't be repeated.")
+        sys.exit(1)
+    except Exception as exc:
+        print(f"error: publish failed before posting: {exc}")
+        sys.exit(1)
+
     print(f"Posted! media id {media_id}")
-    # The post is live. Nothing below may raise, or main() would treat this
-    # as a failed topic and publish a second post.
+    # The post is live. Nothing below may raise.
     try:
         insights.set_media_id(topic["key"], media_id)
+        PENDING_FILE.unlink()
     except Exception as exc:
-        print(f"warning: couldn't save media id ({exc}); it will be "
-              f"recovered from the caption on the next run")
-    return True
+        print(f"warning: post-publish bookkeeping failed ({exc}); the media "
+              f"id will be recovered from the caption on the next run")
 
 
 def main():
-    dry_run = "--dry-run" in sys.argv
+    args = sys.argv[1:]
     load_env_file()
-    if not dry_run:
+
+    if "--dry-run" in args:
+        prepare(dry_run=True)
+    elif "--prepare" in args:
         require_env()
         check_token()
         refresh_token()
@@ -553,31 +646,17 @@ def main():
             insights.collect(os.environ["IG_ACCESS_TOKEN"])
         except Exception as exc:   # analytics must never block posting
             print(f"warning: insights collection failed: {exc}")
-
-    posted = load_posted()
-    topics = pick_topics(fetch_headlines(), posted)
-    if not topics:
-        print("No usable headlines found today.")
-        sys.exit(1)
-
-    with tempfile.TemporaryDirectory() as tmp:
-        for index, topic in enumerate(topics[:MAX_TOPICS_TO_TRY]):
-            # A fresh directory per attempt: sharing one lets a stale render
-            # from a failed attempt be published with the next topic's caption.
-            work_dir = Path(tmp) / f"attempt{index}"
-            work_dir.mkdir(parents=True, exist_ok=True)
-            try:
-                if run_one(topic, work_dir, dry_run):
-                    return
-            except PublishedError as exc:
-                print(f"error: {exc}")
-                print("Stopping: a publish was already issued this run.")
-                sys.exit(1)
-            except Exception as exc:
-                print(f"warning: topic failed ({topic['title']!r}): {exc}")
-
-    print("error: all attempted topics failed")
-    sys.exit(1)
+        prepare(dry_run=False)
+    elif "--publish" in args:
+        idx = args.index("--publish")
+        if idx + 1 >= len(args):
+            print("usage: python bot.py --publish <pages_base_url>")
+            sys.exit(2)
+        require_env()
+        publish(args[idx + 1])
+    else:
+        print(__doc__)
+        sys.exit(2)
 
 
 if __name__ == "__main__":

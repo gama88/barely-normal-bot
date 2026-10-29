@@ -16,9 +16,11 @@ aggregators.
 3. **The visual** — Blender (headless) renders a 7-second vertical reel:
    3D text, brand colors, floating shapes, slow zoom. If Blender fails, a
    Pillow static card is rendered instead so the daily post never dies.
-4. **Publish** — media is uploaded to Cloudinary (Instagram requires a
-   public URL), then posted as a Reel (or image) via the official Instagram
-   API. Every used headline is recorded in `posted.json`.
+4. **Publish** — Instagram's API only accepts media from a public URL, so the
+   workflow deploys the rendered file to this repo's GitHub Pages site, then
+   posts it as a Reel (or image) via the official Instagram API. Each deploy
+   replaces the site, so only the current day's file is hosted. Every used
+   headline is recorded in `posted.json`.
 5. **Learn** — each post is logged in `history.json`. On every run, posts
    1–7 days old get their Instagram insights refreshed (views, reach, shares,
    saves, watch time); after 7 days the numbers are frozen. Run
@@ -31,24 +33,29 @@ Edit `brand.py` to change the voice, colors, handle, feeds, or video length.
 Done:
 - ✅ Meta app "trending-poster-bot" (App ID 1086756720675780), Instagram
   account connected as tester, `IG_USER_ID` = 17841419875074899
-- ✅ Private GitHub repo `gama88/barely-normal-bot` created
+- ✅ GitHub repo `gama88/barely-normal-bot` created
 - ✅ Reddit Data Access Request submitted (pending; the bot doesn't need it)
 
-To start automated posting:
-1. **Allow the CLI to push workflow files** — run `gh auth refresh -s workflow`
-   and finish the browser step, then push.
-2. **New Instagram token with insights permission** — the first token
-   expired. In the Meta app: Use cases → Customize → Permissions and
-   features → add `instagram_business_manage_insights`. Then API setup with
-   Instagram login → **Generate token**. Copy it immediately (shown once).
-3. **Anthropic API key** — https://console.anthropic.com → API Keys, and add
-   a few dollars of credit. This bot uses roughly a few cents per month.
-4. **Cloudinary** — free account at https://cloudinary.com; copy the
-   `CLOUDINARY_URL` (API environment variable) from the dashboard.
-5. **GitHub secrets** — repo Settings → Secrets and variables → Actions:
-   `IG_ACCESS_TOKEN`, `IG_USER_ID`, `CLOUDINARY_URL`, `ANTHROPIC_API_KEY`.
-6. **First run** — Actions tab → Daily Instagram Post → Run workflow. Check
-   the post on Instagram; after that it runs daily at 17:00 UTC.
+- ✅ Repo public with GitHub Pages enabled (source: GitHub Actions) to host
+  each day's media
+- ✅ `instagram_business_manage_insights` permission added; `IG_USER_ID`
+  secret set
+
+To start automated posting, set the remaining secrets (paste when prompted —
+input is hidden):
+
+```bash
+gh secret set IG_ACCESS_TOKEN -R gama88/barely-normal-bot
+gh secret set ANTHROPIC_API_KEY -R gama88/barely-normal-bot
+```
+
+- **IG_ACCESS_TOKEN** — Meta app → Use cases → Customize → API setup with
+  Instagram login → **Generate token** (shown once; copy it immediately).
+- **ANTHROPIC_API_KEY** — https://console.anthropic.com → API Keys, plus a
+  few dollars of credit. The bot uses roughly a few cents per month.
+
+Then: Actions tab → Daily Instagram Post → **Run workflow**, and check the
+post on Instagram. After that it runs daily at 17:00 UTC.
 
 GitHub Actions downloads Blender automatically (cached between runs).
 
