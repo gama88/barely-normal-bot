@@ -30,6 +30,7 @@ import requests
 
 import brand
 import card_fallback
+import insights
 
 POSTED_FILE = Path(__file__).parent / "posted.json"
 GRAPH = "https://graph.instagram.com/v21.0"
@@ -92,6 +93,59 @@ def require_env():
         print(f"error: missing required environment variables: "
               f"{', '.join(missing)}")
         sys.exit(1)
+
+
+def check_token():
+    """Verify the Instagram token works before doing any expensive work."""
+    token = os.environ["IG_ACCESS_TOKEN"]
+    try:
+        resp = requests.get(f"{GRAPH}/me",
+                            params={"fields": "user_id,username",
+                                    "access_token": token},
+                            timeout=30)
+    except requests.RequestException as exc:
+        print(f"warning: couldn't reach Instagram to check token: {exc}")
+        return
+    if resp.ok:
+        print(f"token ok for @{resp.json().get('username', '?')}")
+        return
+    error = resp.json().get("error", {}) if resp.content else {}
+    if error.get("code") == 190:
+        print("error: Instagram access token is expired or invalid. Generate a "
+              "new one in the Meta app dashboard (Use cases -> Customize -> "
+              "API setup with Instagram login -> Generate token) and update "
+              "the IG_ACCESS_TOKEN secret.")
+    else:
+        print(f"error: token check failed: {resp.status_code} {error}")
+    sys.exit(1)
+
+
+def refresh_token():
+    """Extend the long-lived token's 60-day expiry. Never fails the run.
+
+    Refreshing extends the expiry from today, so a daily run keeps the token
+    alive indefinitely — as long as Instagram keeps returning the same token
+    string. If it ever returns a different one, the secret must be updated.
+    """
+    token = os.environ["IG_ACCESS_TOKEN"]
+    try:
+        resp = requests.get("https://graph.instagram.com/refresh_access_token",
+                            params={"grant_type": "ig_refresh_token",
+                                    "access_token": token},
+                            timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+    except (requests.RequestException, ValueError) as exc:
+        # Expected for tokens under 24h old; harmless otherwise.
+        print(f"note: token refresh skipped ({exc})")
+        return
+    days = int(data.get("expires_in", 0)) // 86400
+    if data.get("access_token") and data["access_token"] != token:
+        print(f"WARNING: Instagram issued a NEW token on refresh. The current "
+              f"secret still works for now, but update IG_ACCESS_TOKEN within "
+              f"{days} days or posting will stop.")
+    else:
+        print(f"token refreshed, valid for {days} more days")
 
 
 def load_posted():
@@ -473,10 +527,18 @@ def run_one(topic, work_dir, dry_run):
         posted = load_posted()
         posted.add(topic["key"])
         save_posted(posted)
+        insights.add_record(topic, post, kind, caption)
 
     media_id = post_to_instagram(kind, media_url, caption,
                                  before_publish=record)
     print(f"Posted! media id {media_id}")
+    # The post is live. Nothing below may raise, or main() would treat this
+    # as a failed topic and publish a second post.
+    try:
+        insights.set_media_id(topic["key"], media_id)
+    except Exception as exc:
+        print(f"warning: couldn't save media id ({exc}); it will be "
+              f"recovered from the caption on the next run")
     return True
 
 
@@ -485,6 +547,12 @@ def main():
     load_env_file()
     if not dry_run:
         require_env()
+        check_token()
+        refresh_token()
+        try:
+            insights.collect(os.environ["IG_ACCESS_TOKEN"])
+        except Exception as exc:   # analytics must never block posting
+            print(f"warning: insights collection failed: {exc}")
 
     posted = load_posted()
     topics = pick_topics(fetch_headlines(), posted)

@@ -6,7 +6,7 @@ on:
   workflow_dispatch: {}     # allow manual runs from the Actions tab
 
 permissions:
-  contents: write           # to commit posted.json back
+  contents: write           # to commit posted.json / history.json back
 
 env:
   BLENDER_VERSION: "4.5.12"
@@ -81,13 +81,18 @@ jobs:
         run: xvfb-run -a python bot.py
 
       - name: Commit posted history
+        # always(): when a publish may have gone through but couldn't be
+        # confirmed, bot.py records the topic and then exits non-zero on
+        # purpose. Skipping this step on failure would discard exactly the
+        # record that prevents a duplicate post tomorrow.
+        if: always()
         run: |
           set -euo pipefail
           git config user.name "ig-bot"
           git config user.email "actions@github.com"
-          git add posted.json
+          git add posted.json history.json
           git diff --cached --quiet && { echo "nothing to record"; exit 0; }
-          git commit -m "Record today's post"
+          git commit -m "Record post history and insights"
           # The job runs for many minutes (render + Instagram polling), so the
           # branch may have moved. A bare push would reject and lose the
           # dedupe key for a post that is already live.
