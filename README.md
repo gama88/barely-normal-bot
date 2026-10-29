@@ -12,8 +12,11 @@ aggregators.
    sensitive headlines are filtered out (`BLOCKED_WORDS` in `brand.py`).
 2. **The joke** — an LLM writes an original hook + punchline + caption in
    the brand voice defined in `brand.py`, and can decline a headline it
-   shouldn't joke about. It runs on **GitHub Models** (GPT-4.1-mini), which
-   is free and uses the workflow's built-in token — no API key, no billing.
+   shouldn't joke about. The model is **Qwen3-4B-Instruct** (open source,
+   Apache-2.0), run by llama.cpp directly on the GitHub Actions machine — no
+   API, no key, no account, no cost, and nothing external that can be
+   retired. Both are pinned and the model is SHA-256 verified; the ~2.4 GB
+   download is cached between runs.
 3. **The visual** — Blender (headless) renders a 7-second vertical reel:
    3D text, brand colors, floating shapes, slow zoom. If Blender fails, a
    Pillow static card is rendered instead so the daily post never dies.
@@ -77,7 +80,7 @@ python bot.py --dry-run
 ```
 
 Dry run fetches real headlines, writes the post (uses a placeholder joke if
-`GITHUB_TOKEN` isn't set), renders the visual, and saves a preview to
+no llama-server is running at `LLM_URL`), renders the visual, and saves a preview to
 `out/` — nothing is published. Without Blender installed locally you'll get
 the static-card fallback; install Blender (blender.org) to preview the reel.
 Real posting only runs on GitHub Actions, since the media is served from

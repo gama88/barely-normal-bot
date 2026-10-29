@@ -4,8 +4,8 @@ Pipeline (runs once per day on GitHub Actions), in two phases:
 
   prepare:
     1. Pull trending headlines from Google News RSS (no API key needed)
-    2. An LLM (free, via GitHub Models) writes an original joke/take in the
-       brand voice (brand.py)
+    2. An open-source LLM running on the CI machine writes an original
+       joke/take in the brand voice (brand.py)
     3. Blender renders a branded vertical reel (blender_scene.py);
        falls back to a Pillow static card if Blender is unavailable/fails
     4. Media goes into site/ and the post is saved to pending.json
@@ -53,13 +53,16 @@ FFMPEG_TIMEOUT_SECONDS = 300
 CONTAINER_POLL_SECONDS = 600
 MAX_CONSECUTIVE_POLL_ERRORS = 3
 
-REQUIRED_ENV = ("IG_ACCESS_TOKEN", "IG_USER_ID", "GITHUB_TOKEN")
+REQUIRED_ENV = ("IG_ACCESS_TOKEN", "IG_USER_ID")
 
-# Joke writing uses GitHub Models: free, and callable from GitHub Actions with
-# the workflow's built-in GITHUB_TOKEN (needs `permissions: models: read`), so
-# there is no API key or billing. Models are tried in order.
-MODELS_URL = "https://models.github.ai/inference/chat/completions"
-MODELS = ("openai/gpt-4.1-mini", "openai/gpt-4o-mini")
+# Jokes are written by an open-source model (Qwen3-4B-Instruct, Apache-2.0)
+# running on the GitHub Actions machine itself via llama.cpp's llama-server,
+# which the workflow starts before the bot runs. No API, key, account, or
+# cost — nothing external that can be retired or start charging.
+LLM_URL = os.environ.get("LLM_URL",
+                         "http://127.0.0.1:8080/v1/chat/completions")
+LLM_ATTEMPTS = 2
+LLM_TIMEOUT_SECONDS = 300    # CPU inference: generous, it's a ~4B model
 
 FONT_CANDIDATES = [
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",   # GitHub Actions
@@ -261,30 +264,30 @@ If "usable" is false, the other values may be empty strings / an empty list.
 
 
 def call_model(messages):
-    """POST to GitHub Models, trying each model in order. Returns text."""
-    token = os.environ["GITHUB_TOKEN"]
+    """Ask the local llama-server for a completion. Returns the reply text.
+
+    llama-server speaks the OpenAI chat format; `response_format` json_object
+    makes it constrain sampling to valid JSON.
+    """
     last_error = None
-    for model in MODELS:
+    for attempt in range(1, LLM_ATTEMPTS + 1):
         try:
             resp = requests.post(
-                MODELS_URL,
-                headers={"Authorization": f"Bearer {token}",
-                         "Content-Type": "application/json",
-                         "Accept": "application/json"},
-                json={"model": model, "messages": messages,
+                LLM_URL,
+                headers={"Content-Type": "application/json"},
+                json={"messages": messages,
                       "response_format": {"type": "json_object"},
-                      "temperature": 0.9, "max_tokens": 800},
-                timeout=90,
+                      "temperature": 0.9, "top_p": 0.95,
+                      "max_tokens": 400},
+                timeout=LLM_TIMEOUT_SECONDS,
             )
             resp.raise_for_status()
-            text = resp.json()["choices"][0]["message"]["content"]
-            print(f"joke written by {model}")
-            return text
+            return resp.json()["choices"][0]["message"]["content"]
         except (requests.RequestException, KeyError, IndexError,
                 ValueError) as exc:
-            print(f"warning: model {model} failed: {exc}")
+            print(f"warning: model call {attempt} failed: {exc}")
             last_error = exc
-    raise RuntimeError(f"all models failed: {last_error}")
+    raise RuntimeError(f"joke model unavailable: {last_error}")
 
 
 def parse_post(text):
@@ -349,7 +352,7 @@ def write_post(headline):
 
 
 def canned_post(headline):
-    """Offline stand-in for --dry-run when no GITHUB_TOKEN is available."""
+    """Stand-in for --dry-run when no model server is running."""
     return {
         "usable": True,
         "hook": clean_text(headline["title"], brand.MAX_HOOK_CHARS),
@@ -550,10 +553,14 @@ def post_to_instagram(kind, media_url, caption, before_publish=None):
 
 def make_post(topic, work_dir, dry_run):
     """Write and render one post. Returns (post, kind, media, caption) or None."""
-    if dry_run and not os.environ.get("GITHUB_TOKEN"):
-        post = canned_post(topic)
-    else:
+    try:
         post = write_post(topic)
+    except RuntimeError as exc:
+        if not dry_run:
+            raise
+        # Locally there's usually no model server running; preview anyway.
+        print(f"note: {exc} — using a placeholder joke for the preview")
+        post = canned_post(topic)
     if post is None:
         return None
 

@@ -14,7 +14,6 @@ permissions:
   contents: write           # to commit posted.json / history.json back
   pages: write              # to deploy today's video to GitHub Pages
   id-token: write           # required by actions/deploy-pages
-  models: read              # free joke writing via GitHub Models (no API key)
 
 # One run at a time: two overlapping runs would fight over the Pages site
 # and could publish each other's video.
@@ -24,6 +23,12 @@ concurrency:
 
 env:
   BLENDER_VERSION: "4.5.12"
+  # The joke model runs on this machine — no API, key, or account. Both the
+  # engine build and the model file are pinned, and the model is checked
+  # against its published SHA-256 so a changed or corrupt file can't run.
+  LLAMA_BUILD: "b11978"
+  MODEL_URL: "https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/a06e946bb6b655725eafa393f4a9745d460374c9/Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
+  MODEL_SHA256: "3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597"
 
 jobs:
   post:
@@ -48,9 +53,12 @@ jobs:
             libsm6 libice6 ffmpeg fonts-dejavu-core
           pip install -r requirements.txt
 
-      - name: Cache Blender
+      # restore + explicit save (instead of actions/cache) so the download is
+      # cached even when a later step fails — the plain action only saves at
+      # the end of a fully successful job.
+      - name: Restore Blender
         id: cache-blender
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: blender-${{ env.BLENDER_VERSION }}-linux-x64
           key: blender-${{ env.BLENDER_VERSION }}-linux-x64
@@ -86,13 +94,63 @@ jobs:
           echo "All Blender download sources failed" >&2
           exit 1
 
+      - name: Save Blender
+        if: steps.cache-blender.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: blender-${{ env.BLENDER_VERSION }}-linux-x64
+          key: blender-${{ env.BLENDER_VERSION }}-linux-x64
+
       - name: Add Blender to PATH
         run: echo "$PWD/blender-${BLENDER_VERSION}-linux-x64" >> "$GITHUB_PATH"
 
+      - name: Restore joke model
+        id: cache-llm
+        uses: actions/cache/restore@v4
+        with:
+          path: llm
+          key: llm-${{ env.LLAMA_BUILD }}-${{ env.MODEL_SHA256 }}
+
+      - name: Download joke model
+        if: steps.cache-llm.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p llm
+          curl -fsSL --retry 3 -o llama.tar.gz \
+            "https://github.com/ggml-org/llama.cpp/releases/download/${LLAMA_BUILD}/llama-${LLAMA_BUILD}-bin-ubuntu-x64.tar.gz"
+          tar -xzf llama.tar.gz -C llm
+          rm -f llama.tar.gz
+          curl -fsSL --retry 3 -o llm/model.gguf "${MODEL_URL}"
+          echo "${MODEL_SHA256}  llm/model.gguf" | sha256sum -c -
+
+      - name: Save joke model
+        if: steps.cache-llm.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: llm
+          key: llm-${{ env.LLAMA_BUILD }}-${{ env.MODEL_SHA256 }}
+
+      - name: Start joke model server
+        run: |
+          set -euo pipefail
+          bin="$PWD/llm/llama-${LLAMA_BUILD}"
+          export LD_LIBRARY_PATH="${bin}:${LD_LIBRARY_PATH:-}"
+          nohup "${bin}/llama-server" -m llm/model.gguf \
+            --host 127.0.0.1 --port 8080 -c 4096 -t "$(nproc)" \
+            > llama-server.log 2>&1 &
+          for i in $(seq 1 90); do
+            if curl -sf http://127.0.0.1:8080/health > /dev/null; then
+              echo "model server ready after ~$((i * 2))s"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "model server failed to start:" >&2
+          tail -n 40 llama-server.log >&2
+          exit 1
+
       - name: Test run — write and render only
         if: ${{ inputs.test_run }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: xvfb-run -a python bot.py --dry-run
 
       - name: Attach test video to this run
@@ -107,7 +165,6 @@ jobs:
         env:
           IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
           IG_USER_ID: ${{ secrets.IG_USER_ID }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: xvfb-run -a python bot.py --prepare
 
       # Instagram's API only accepts media from a public URL, so the rendered
@@ -129,8 +186,11 @@ jobs:
         env:
           IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
           IG_USER_ID: ${{ secrets.IG_USER_ID }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python bot.py --publish "${{ steps.deployment.outputs.page_url }}"
+
+      - name: Show joke model log (on failure)
+        if: failure()
+        run: tail -n 60 llama-server.log 2>/dev/null || echo "no model log"
 
       - name: Commit posted history
         # always(): when a publish may have gone through but couldn't be
