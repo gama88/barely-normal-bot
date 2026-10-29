@@ -3,12 +3,18 @@ name: Daily Instagram Post
 on:
   schedule:
     - cron: "0 17 * * *"   # ~noon US Central, daily
-  workflow_dispatch: {}     # allow manual runs from the Actions tab
+  workflow_dispatch:        # allow manual runs from the Actions tab
+    inputs:
+      test_run:
+        description: "Test run: write + render only, don't post (video is attached to the run)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write           # to commit posted.json / history.json back
   pages: write              # to deploy today's video to GitHub Pages
   id-token: write           # required by actions/deploy-pages
+  models: read              # free joke writing via GitHub Models (no API key)
 
 # One run at a time: two overlapping runs would fight over the Pages site
 # and could publish each other's video.
@@ -83,30 +89,47 @@ jobs:
       - name: Add Blender to PATH
         run: echo "$PWD/blender-${BLENDER_VERSION}-linux-x64" >> "$GITHUB_PATH"
 
+      - name: Test run — write and render only
+        if: ${{ inputs.test_run }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: xvfb-run -a python bot.py --dry-run
+
+      - name: Attach test video to this run
+        if: ${{ inputs.test_run }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-post
+          path: out/
+
       - name: Write and render today's post
+        if: ${{ !inputs.test_run }}
         env:
           IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
           IG_USER_ID: ${{ secrets.IG_USER_ID }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: xvfb-run -a python bot.py --prepare
 
       # Instagram's API only accepts media from a public URL, so the rendered
       # video is served from GitHub Pages. Each deploy replaces the whole
       # site, so only today's file is ever public there.
       - name: Upload media for Pages
+        if: ${{ !inputs.test_run }}
         uses: actions/upload-pages-artifact@v3
         with:
           path: site
 
       - name: Deploy media to Pages
+        if: ${{ !inputs.test_run }}
         id: deployment
         uses: actions/deploy-pages@v4
 
       - name: Publish to Instagram
+        if: ${{ !inputs.test_run }}
         env:
           IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
           IG_USER_ID: ${{ secrets.IG_USER_ID }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python bot.py --publish "${{ steps.deployment.outputs.page_url }}"
 
       - name: Commit posted history

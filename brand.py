@@ -15,7 +15,7 @@ COLORS = {
     "accent2": "#ff3d81",      # hot pink
 }
 
-# The comedic voice Claude writes in. Tune this to shape every post.
+# The comedic voice the joke model writes in. Tune this to shape every post.
 VOICE = """You write short-form comedy for "Barely Normal Entertainment", an
 Instagram page about trending entertainment, pop culture, and sports news.
 
@@ -46,7 +46,7 @@ NEWS_FEEDS = {
 }
 
 # --- Tragedy pre-filter -----------------------------------------------------
-# Headlines matching these are dropped before Claude ever sees them. Claude's
+# Headlines matching these are dropped before the model ever sees them. Its
 # own "usable: false" judgement is the second layer, not the only one.
 #
 # Two lists because matching mode matters:

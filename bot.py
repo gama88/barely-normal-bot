@@ -4,7 +4,8 @@ Pipeline (runs once per day on GitHub Actions), in two phases:
 
   prepare:
     1. Pull trending headlines from Google News RSS (no API key needed)
-    2. Claude writes an original joke/take in the brand voice (brand.py)
+    2. An LLM (free, via GitHub Models) writes an original joke/take in the
+       brand voice (brand.py)
     3. Blender renders a branded vertical reel (blender_scene.py);
        falls back to a Pillow static card if Blender is unavailable/fails
     4. Media goes into site/ and the post is saved to pending.json
@@ -52,7 +53,13 @@ FFMPEG_TIMEOUT_SECONDS = 300
 CONTAINER_POLL_SECONDS = 600
 MAX_CONSECUTIVE_POLL_ERRORS = 3
 
-REQUIRED_ENV = ("IG_ACCESS_TOKEN", "IG_USER_ID", "ANTHROPIC_API_KEY")
+REQUIRED_ENV = ("IG_ACCESS_TOKEN", "IG_USER_ID", "GITHUB_TOKEN")
+
+# Joke writing uses GitHub Models: free, and callable from GitHub Actions with
+# the workflow's built-in GITHUB_TOKEN (needs `permissions: models: read`), so
+# there is no API key or billing. Models are tried in order.
+MODELS_URL = "https://models.github.ai/inference/chat/completions"
+MODELS = ("openai/gpt-4.1-mini", "openai/gpt-4o-mini")
 
 FONT_CANDIDATES = [
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",   # GitHub Actions
@@ -97,7 +104,7 @@ def load_env_file():
 
 
 def require_env():
-    """Fail fast before spending a Claude call and a multi-minute render."""
+    """Fail fast before spending a model call and a multi-minute render."""
     missing = [k for k in REQUIRED_ENV if not os.environ.get(k)]
     if missing:
         print(f"error: missing required environment variables: "
@@ -238,83 +245,115 @@ def pick_topics(headlines, posted):
     return picked
 
 
-# ----------------------------------------------------------------- claude ---
+# ------------------------------------------------------------ joke writer ---
 
-POST_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "usable": {
-            "type": "boolean",
-            "description": "false if this headline is not appropriate joke material",
-        },
-        "hook": {
-            "type": "string",
-            "maxLength": brand.MAX_HOOK_CHARS,
-            "description": "Short punchy setup shown large on screen. No emoji.",
-        },
-        "punchline": {
-            "type": "string",
-            "maxLength": brand.MAX_PUNCH_CHARS,
-            "description": "The joke/take. No emoji.",
-        },
-        "caption": {
-            "type": "string",
-            "maxLength": 600,
-            "description": "1-2 sentence Instagram caption continuing the bit",
-        },
-        "hashtags": {
-            "type": "array",
-            "items": {"type": "string"},
-            "maxItems": brand.MAX_HASHTAGS,
-            "description": "5-8 relevant single-word hashtags without the # symbol",
-        },
-    },
-    "required": ["usable", "hook", "punchline", "caption", "hashtags"],
-    "additionalProperties": False,
-}
+OUTPUT_FORMAT = f"""
+Reply with ONLY a JSON object, no other text, with exactly these keys:
+  "usable":    true or false — false if the headline is not joke material
+  "hook":      short punchy setup shown large on screen, at most
+               {brand.MAX_HOOK_CHARS} characters, no emoji
+  "punchline": the joke/take, at most {brand.MAX_PUNCH_CHARS} characters,
+               no emoji
+  "caption":   1-2 sentence Instagram caption continuing the bit
+  "hashtags":  list of 5-8 single-word hashtags, without the # symbol
+If "usable" is false, the other values may be empty strings / an empty list.
+"""
 
 
-def write_post(headline):
-    """Ask Claude for the joke. Returns dict or None if headline unusable."""
-    import anthropic
+def call_model(messages):
+    """POST to GitHub Models, trying each model in order. Returns text."""
+    token = os.environ["GITHUB_TOKEN"]
+    last_error = None
+    for model in MODELS:
+        try:
+            resp = requests.post(
+                MODELS_URL,
+                headers={"Authorization": f"Bearer {token}",
+                         "Content-Type": "application/json",
+                         "Accept": "application/json"},
+                json={"model": model, "messages": messages,
+                      "response_format": {"type": "json_object"},
+                      "temperature": 0.9, "max_tokens": 800},
+                timeout=90,
+            )
+            resp.raise_for_status()
+            text = resp.json()["choices"][0]["message"]["content"]
+            print(f"joke written by {model}")
+            return text
+        except (requests.RequestException, KeyError, IndexError,
+                ValueError) as exc:
+            print(f"warning: model {model} failed: {exc}")
+            last_error = exc
+    raise RuntimeError(f"all models failed: {last_error}")
 
-    client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY
-    response = client.messages.create(
-        model="claude-haiku-4-5",
-        max_tokens=1024,
-        system=brand.VOICE,
-        messages=[{
-            "role": "user",
-            "content": (
-                "Today's trending headline:\n"
-                f"\"{headline['title']}\" (category: {headline['feed']})\n\n"
-                "Write the post. If this headline shouldn't be joked about "
-                "per your rules, set usable to false."
-            ),
-        }],
-        output_config={"format": {"type": "json_schema", "schema": POST_SCHEMA}},
-    )
-    text = next(b.text for b in response.content if b.type == "text")
-    post = json.loads(text)
-    if not post.get("usable"):
-        print(f"claude declined headline: {headline['title']!r}")
+
+def parse_post(text):
+    """Validate the model's JSON. Returns dict, or None if unusable/invalid."""
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        # Some models wrap JSON in prose or a code fence; take the object.
+        match = re.search(r"\{.*\}", text or "", re.S)
+        if not match:
+            print("model reply had no JSON object")
+            return None
+        try:
+            data = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            print("model reply JSON was malformed")
+            return None
+    if not isinstance(data, dict):
         return None
 
-    # Enforce limits in code — schema descriptions alone don't guarantee them.
-    post["hook"] = clean_text(post["hook"], brand.MAX_HOOK_CHARS)
-    post["punchline"] = clean_text(post["punchline"], brand.MAX_PUNCH_CHARS)
+    usable = data.get("usable")
+    if isinstance(usable, str):
+        usable = usable.strip().lower() == "true"
+    if usable is not True:
+        return None
+
+    hashtags = data.get("hashtags")
+    if isinstance(hashtags, str):
+        hashtags = hashtags.replace(",", " ").split()
+    if not isinstance(hashtags, list):
+        hashtags = []
+
+    post = {
+        "usable": True,
+        # Enforce limits in code — models don't reliably count characters.
+        "hook": clean_text(str(data.get("hook") or ""), brand.MAX_HOOK_CHARS),
+        "punchline": clean_text(str(data.get("punchline") or ""),
+                                brand.MAX_PUNCH_CHARS),
+        "caption": str(data.get("caption") or ""),
+        "hashtags": [str(t) for t in hashtags],
+    }
     if not post["hook"] or not post["punchline"]:
-        print("claude returned empty hook/punchline after cleaning")
+        print("model returned empty hook/punchline after cleaning")
         return None
     return post
 
 
+def write_post(headline):
+    """Get the joke. Returns dict, or None if the headline is unusable."""
+    text = call_model([
+        {"role": "system", "content": brand.VOICE + "\n" + OUTPUT_FORMAT},
+        {"role": "user", "content": (
+            "Today's trending headline:\n"
+            f"\"{headline['title']}\" (category: {headline['feed']})\n\n"
+            "Write the post. If this headline shouldn't be joked about "
+            "per your rules, set usable to false.")},
+    ])
+    post = parse_post(text)
+    if post is None:
+        print(f"model declined or failed on headline: {headline['title']!r}")
+    return post
+
+
 def canned_post(headline):
-    """Offline stand-in for --dry-run without an API key."""
+    """Offline stand-in for --dry-run when no GITHUB_TOKEN is available."""
     return {
         "usable": True,
         "hook": clean_text(headline["title"], brand.MAX_HOOK_CHARS),
-        "punchline": "Dry-run placeholder. The real joke comes from Claude.",
+        "punchline": "Dry-run placeholder. The real joke comes from the model.",
         "caption": "Dry-run caption. Nothing was posted.",
         "hashtags": ["memes", "entertainment", "trending"],
     }
@@ -511,7 +550,7 @@ def post_to_instagram(kind, media_url, caption, before_publish=None):
 
 def make_post(topic, work_dir, dry_run):
     """Write and render one post. Returns (post, kind, media, caption) or None."""
-    if dry_run and not os.environ.get("ANTHROPIC_API_KEY"):
+    if dry_run and not os.environ.get("GITHUB_TOKEN"):
         post = canned_post(topic)
     else:
         post = write_post(topic)

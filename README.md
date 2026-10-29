@@ -10,9 +10,10 @@ aggregators.
 1. **Trending topics** — pulls the day's headlines from Google News RSS
    (entertainment, sports, top stories — no API key needed). Tragic or
    sensitive headlines are filtered out (`BLOCKED_WORDS` in `brand.py`).
-2. **The joke** — Claude (Haiku) writes an original hook + punchline +
-   caption in the brand voice defined in `brand.py`. Claude can also decline
-   a headline it shouldn't joke about.
+2. **The joke** — an LLM writes an original hook + punchline + caption in
+   the brand voice defined in `brand.py`, and can decline a headline it
+   shouldn't joke about. It runs on **GitHub Models** (GPT-4.1-mini), which
+   is free and uses the workflow's built-in token — no API key, no billing.
 3. **The visual** — Blender (headless) renders a 7-second vertical reel:
    3D text, brand colors, floating shapes, slow zoom. If Blender fails, a
    Pillow static card is rendered instead so the daily post never dies.
@@ -35,27 +36,26 @@ Done:
   account connected as tester, `IG_USER_ID` = 17841419875074899
 - ✅ GitHub repo `gama88/barely-normal-bot` created
 - ✅ Reddit Data Access Request submitted (pending; the bot doesn't need it)
-
 - ✅ Repo public with GitHub Pages enabled (source: GitHub Actions) to host
   each day's media
 - ✅ `instagram_business_manage_insights` permission added; `IG_USER_ID`
   secret set
 
-To start automated posting, set the remaining secrets (paste when prompted —
-input is hidden):
+The only secret left to set is the Instagram token (paste when prompted —
+input is hidden). Get it from the Meta app → Use cases → Customize → API
+setup with Instagram login → **Generate token** (shown once; copy it
+immediately):
 
 ```bash
 gh secret set IG_ACCESS_TOKEN -R gama88/barely-normal-bot
-gh secret set ANTHROPIC_API_KEY -R gama88/barely-normal-bot
 ```
 
-- **IG_ACCESS_TOKEN** — Meta app → Use cases → Customize → API setup with
-  Instagram login → **Generate token** (shown once; copy it immediately).
-- **ANTHROPIC_API_KEY** — https://console.anthropic.com → API Keys, plus a
-  few dollars of credit. The bot uses roughly a few cents per month.
+To check everything without posting: Actions tab → Daily Instagram Post →
+**Run workflow** with **Test run** ticked. It writes a real joke and renders
+the real video, then attaches the video to the run instead of posting.
 
-Then: Actions tab → Daily Instagram Post → **Run workflow**, and check the
-post on Instagram. After that it runs daily at 17:00 UTC.
+Then run it again with Test run unticked for the first real post. After that
+it runs daily at 17:00 UTC.
 
 GitHub Actions downloads Blender automatically (cached between runs).
 
@@ -77,7 +77,8 @@ python bot.py --dry-run
 ```
 
 Dry run fetches real headlines, writes the post (uses a placeholder joke if
-`ANTHROPIC_API_KEY` isn't set), renders the visual, and saves a preview to
+`GITHUB_TOKEN` isn't set), renders the visual, and saves a preview to
 `out/` — nothing is published. Without Blender installed locally you'll get
 the static-card fallback; install Blender (blender.org) to preview the reel.
-For a real local post, copy `.env.example` to `.env` and fill it in.
+Real posting only runs on GitHub Actions, since the media is served from
+GitHub Pages.
