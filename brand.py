@@ -122,6 +122,6 @@ REEL = {
 # The model is asked for <70 but small models overshoot; clipping mid-sentence
 # reads badly on screen, so allow headroom (the renderers auto-shrink the font).
 MAX_HOOK_CHARS = 90
-MAX_PUNCH_CHARS = 120
+MAX_PUNCH_CHARS = 160   # asked for <120; same overshoot headroom as the hook
 MAX_CAPTION_CHARS = 2000     # Instagram hard limit is 2200 incl. hashtags
 MAX_HASHTAGS = 25            # Instagram hard limit is 30

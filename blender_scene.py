@@ -220,7 +220,7 @@ def main():
     # --- text ---
     # Safe zone is z in [-5.3, +7.1]. Hook is top-anchored at 5.5 and may grow
     # down to 0.5 (budget 5.0); punchline top-anchored at -0.8, budget 3.0.
-    hook_w, punch_w = 8.4, 8.0
+    hook_w, punch_w = 8.0, 7.4
     hook_size = fit_size(cfg["hook"], 0.90, hook_w, 5.0, upper=True)
     punch_size = fit_size(cfg["punchline"], 0.50, punch_w, 3.0, upper=False)
 
@@ -237,10 +237,10 @@ def main():
     # --- floating emissive shapes behind the text ---
     for i in range(9):
         kind = random.choice(("ico", "cube", "torus"))
-        # Keep the centre column clear: text boxes are up to 8.4 units wide
-        # (x in [-4.2, 4.2]), so shapes live out at the frame edges instead of
-        # glowing through the copy.
-        x = random.choice((-1, 1)) * random.uniform(3.6, 5.2)
+        # Keep the centre column clear: text boxes are up to 8.0 units wide
+        # (x in [-4.0, 4.0]) and long lines fill them, so shapes sit at the
+        # frame edge (x = ±5.0) and partly past it, never over the copy.
+        x = random.choice((-1, 1)) * random.uniform(4.4, 5.6)
         z = random.uniform(-8, 8)
         y = random.uniform(3.5, 6.5)     # well behind the text plane
         s = random.uniform(0.15, 0.5)
