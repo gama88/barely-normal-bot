@@ -25,7 +25,15 @@ aggregators.
    posts it as a Reel (or image) via the official Instagram API. Each deploy
    replaces the site, so only the current day's file is hosted. Every used
    headline is recorded in `posted.json`.
-5. **Learn** — each post is logged in `history.json`. On every run, posts
+5. **Approve by email** — with `APPROVAL_REQUIRED: "true"` (the default, in
+   `daily-post.yml`), the post isn't published right away. The bot opens a
+   GitHub issue with the joke and a link to the video, and GitHub emails it
+   to you. Reply `approve` to the email (or comment on the issue) and
+   `approve-post.yml` publishes it; reply `reject` to skip the day. Only the
+   repo owner's replies count. An unanswered request expires when the next
+   day's post is prepared. Set `APPROVAL_REQUIRED: "false"` for fully
+   automatic posting.
+6. **Learn** — each post is logged in `history.json`. On every run, posts
    1–7 days old get their Instagram insights refreshed (views, reach, shares,
    saves, watch time); after 7 days the numbers are frozen. Run
    `python insights.py` for a performance report.

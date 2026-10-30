@@ -23,6 +23,7 @@ Usage:
     python bot.py --publish <base_url>  # phase 2 (CI), base_url = Pages URL
 """
 
+import base64
 import hashlib
 import json
 import os
@@ -736,6 +737,189 @@ def prepare(dry_run):
     sys.exit(1)
 
 
+# --------------------------------------------------------------- approval ---
+# Instead of posting straight away, the daily run can open a GitHub issue
+# with the joke and a link to the video. GitHub emails it to the repo owner,
+# who replies "approve" or "reject" — by email or on the issue. The reply
+# becomes a comment, which triggers .github/workflows/approve-post.yml.
+
+APPROVAL_LABEL = "post-approval"
+EXIT_MAYBE_PUBLISHED = 3   # publish() exit code: post may be live, don't retry
+PENDING_MARKER = re.compile(r"<!--\s*pending:([A-Za-z0-9+/=]+)\s*-->")
+APPROVE_WORDS = {"approve", "approved", "yes", "post", "ok", "okay", "lgtm"}
+REJECT_WORDS = {"reject", "rejected", "no", "skip", "nope"}
+
+
+def gh_api(method, path, **payload):
+    """Call the GitHub REST API for this repo with the workflow's token."""
+    repo = os.environ["GITHUB_REPOSITORY"]
+    resp = requests.request(
+        method, f"https://api.github.com/repos/{repo}{path}",
+        headers={"Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
+                 "Accept": "application/vnd.github+json",
+                 "X-GitHub-Api-Version": "2022-11-28"},
+        json=payload or None, timeout=30)
+    resp.raise_for_status()
+    return resp.json() if resp.content else None
+
+
+def repo_owner():
+    return os.environ["GITHUB_REPOSITORY"].split("/")[0]
+
+
+def encode_pending(pending):
+    raw = json.dumps(pending, ensure_ascii=False).encode("utf-8")
+    return base64.b64encode(raw).decode("ascii")
+
+
+def decode_pending(issue_body):
+    match = PENDING_MARKER.search(issue_body or "")
+    if not match:
+        return None
+    return json.loads(base64.b64decode(match.group(1)).decode("utf-8"))
+
+
+def approval_body(pending, video_url):
+    post = pending["post"]
+    tags = " ".join(f"#{t}" for t in post.get("hashtags", []))
+    media = "video" if pending["kind"] == "video" else "image"
+    return f"""@{repo_owner()} today's post is ready for review.
+
+**News:** {pending['topic']['title']}
+
+> **{post['hook']}**
+> {post['punchline']}
+
+**Caption:** {pending['caption'].split(chr(10))[0]}
+
+{tags}
+
+▶️ **[Watch the {media}]({video_url})**
+
+**Reply to this email (or comment here) with one word:**
+- `approve` — post it to Instagram now
+- `reject` — skip today
+
+_This expires when tomorrow's post is prepared._
+
+<!-- pending:{encode_pending(pending)} -->
+"""
+
+
+def request_approval(base_url):
+    """Open the approval issue for the staged post (closing stale ones)."""
+    if not PENDING_FILE.exists():
+        print("error: nothing staged — run --prepare first")
+        sys.exit(1)
+    pending = json.loads(PENDING_FILE.read_text(encoding="utf-8"))
+    pending["base_url"] = base_url
+    video_url = f"{base_url.rstrip('/')}/{pending['filename']}"
+
+    # An older unanswered request can no longer be posted: its video was
+    # replaced on Pages by today's deploy.
+    for old in gh_api("GET", f"/issues?labels={APPROVAL_LABEL}&state=open") or []:
+        gh_api("POST", f"/issues/{old['number']}/comments",
+               body="Expired — a newer post was prepared, so this one was "
+                    "never published.")
+        gh_api("PATCH", f"/issues/{old['number']}", state="closed",
+               state_reason="not_planned")
+
+    try:
+        gh_api("POST", "/labels", name=APPROVAL_LABEL, color="c6ff00",
+               description="Daily post waiting for the owner's approval")
+    except requests.HTTPError as exc:
+        if exc.response is None or exc.response.status_code != 422:
+            raise   # 422 = label already exists
+
+    issue = gh_api("POST", "/issues",
+                   title=f"Approve today's post: {pending['post']['hook']}",
+                   body=approval_body(pending, video_url),
+                   labels=[APPROVAL_LABEL])
+    print(f"approval requested: {issue['html_url']}")
+
+
+def reply_word(comment_body):
+    """First word of the reply, ignoring quoted email text and punctuation."""
+    for line in (comment_body or "").splitlines():
+        line = line.strip()
+        if not line or line.startswith(">"):
+            continue
+        return re.sub(r"[^a-z]", "", line.split()[0].lower())
+    return ""
+
+
+def handle_approval():
+    """Run from approve-post.yml when someone comments on an approval issue."""
+    with open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8") as f:
+        event = json.load(f)
+    issue, comment = event["issue"], event["comment"]
+    number = issue["number"]
+
+    # The repo is public, so anyone can comment. Only the owner decides.
+    if comment["user"]["login"] != repo_owner():
+        print(f"ignoring comment from {comment['user']['login']}")
+        return
+    # The event payload is a snapshot from when the comment was made. A
+    # second "approve" queued behind the first must see the issue the first
+    # one already closed, so re-read it live.
+    issue = gh_api("GET", f"/issues/{number}")
+    if issue["state"] != "open":
+        print("issue already closed")
+        return
+
+    word = reply_word(comment["body"])
+    if word in REJECT_WORDS:
+        gh_api("POST", f"/issues/{number}/comments",
+               body="Skipped — nothing was posted.")
+        gh_api("PATCH", f"/issues/{number}", state="closed",
+               state_reason="not_planned")
+        print("rejected by owner")
+        return
+    if word not in APPROVE_WORDS:
+        gh_api("POST", f"/issues/{number}/comments",
+               body="I didn't understand that — reply `approve` to post or "
+                    "`reject` to skip.")
+        return
+
+    pending = decode_pending(issue["body"])
+    if not pending:
+        gh_api("POST", f"/issues/{number}/comments",
+               body="Couldn't read the post data in this issue, so nothing "
+                    "was posted.")
+        sys.exit(1)
+    if pending["topic"]["key"] in load_posted():
+        gh_api("POST", f"/issues/{number}/comments",
+               body="Already posted — nothing more to do.")
+        gh_api("PATCH", f"/issues/{number}", state="closed",
+               state_reason="completed")
+        return
+
+    PENDING_FILE.write_text(json.dumps(pending, ensure_ascii=False),
+                            encoding="utf-8")
+    try:
+        publish(pending["base_url"])
+    except SystemExit as exc:
+        if exc.code == EXIT_MAYBE_PUBLISHED:
+            gh_api("POST", f"/issues/{number}/comments",
+                   body="Instagram may have published this but didn't "
+                        "confirm it. Check the account — it's recorded as "
+                        "posted so it won't be repeated. Closing this so it "
+                        "can't be posted twice.")
+            gh_api("PATCH", f"/issues/{number}", state="closed",
+                   state_reason="completed")
+            raise
+        if exc.code not in (0, None):
+            gh_api("POST", f"/issues/{number}/comments",
+                   body="Posting failed before anything went live — see the "
+                        "workflow run log. Nothing was posted, so you can "
+                        "retry by replying `approve` again.")
+            raise
+    gh_api("POST", f"/issues/{number}/comments",
+           body="Posted to Instagram ✅")
+    gh_api("PATCH", f"/issues/{number}", state="closed",
+           state_reason="completed")
+
+
 def publish(base_url):
     """Phase 2: post the staged media, now live on GitHub Pages.
 
@@ -764,7 +948,7 @@ def publish(base_url):
     except PublishedError as exc:
         print(f"error: {exc}")
         print("The post may be live; it's recorded so it won't be repeated.")
-        sys.exit(1)
+        sys.exit(EXIT_MAYBE_PUBLISHED)
     except Exception as exc:
         print(f"error: publish failed before posting: {exc}")
         sys.exit(1)
@@ -808,6 +992,15 @@ def main():
         except Exception as exc:   # analytics must never block posting
             print(f"warning: insights collection failed: {exc}")
         prepare(dry_run=False)
+    elif "--request-approval" in args:
+        idx = args.index("--request-approval")
+        if idx + 1 >= len(args):
+            print("usage: python bot.py --request-approval <pages_base_url>")
+            sys.exit(2)
+        request_approval(args[idx + 1])
+    elif "--handle-approval" in args:
+        require_env()
+        handle_approval()
     elif "--publish" in args:
         idx = args.index("--publish")
         if idx + 1 >= len(args):

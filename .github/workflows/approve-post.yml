@@ -1,0 +1,65 @@
+name: Approve Instagram Post
+
+# The daily run opens an issue labelled "post-approval" and GitHub emails it
+# to the repo owner. Replying "approve" (by email or on the issue) adds a
+# comment, which runs this workflow and publishes the post.
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write           # commit posted.json / history.json
+  issues: write             # comment on and close the approval issue
+
+# Shares the daily run's group: never publish while a new post is being
+# prepared, and serialize double "approve" replies (the second one then sees
+# the issue already closed).
+concurrency:
+  group: daily-post
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    # The repo is public, so anyone can comment — only the owner's replies on
+    # open approval issues do anything. bot.py re-checks both.
+    if: >-
+      github.event.issue.pull_request == null &&
+      contains(github.event.issue.labels.*.name, 'post-approval') &&
+      github.event.issue.state == 'open' &&
+      github.event.comment.user.login == github.repository_owner
+    runs-on: ubuntu-latest
+    env:
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Publish the approved post
+        env:
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+          IG_USER_ID: ${{ secrets.IG_USER_ID }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python bot.py --handle-approval
+
+      - name: Commit posted history
+        if: always()
+        run: |
+          set -euo pipefail
+          git config user.name "ig-bot"
+          git config user.email "actions@github.com"
+          git add posted.json history.json
+          git diff --cached --quiet && { echo "nothing to record"; exit 0; }
+          git commit -m "Record approved post"
+          for attempt in 1 2 3; do
+            if git push; then exit 0; fi
+            echo "push rejected, rebasing (attempt ${attempt})"
+            git pull --rebase --autostash origin "${GITHUB_REF_NAME}"
+          done
+          echo "Failed to push posted.json after 3 attempts" >&2
+          exit 1

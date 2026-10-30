@@ -34,6 +34,7 @@ permissions:
   contents: write           # to commit posted.json / history.json back
   pages: write              # to deploy today's video to GitHub Pages
   id-token: write           # required by actions/deploy-pages
+  issues: write             # to open the daily approval request
 
 # One run at a time: two overlapping runs would fight over the Pages site
 # and could publish each other's video.
@@ -45,6 +46,9 @@ concurrency:
 
 env:
   PYTHONUNBUFFERED: "1"     # stream bot logs live instead of at exit
+  # "true": each day's post waits for the owner to reply "approve" to the
+  # email GitHub sends. "false": post automatically with no review.
+  APPROVAL_REQUIRED: "true"
   BLENDER_VERSION: "4.5.12"
   # The joke model runs on this machine — no API, key, or account. The engine
   # build and each model file are pinned, and the model is checked against
@@ -284,8 +288,16 @@ jobs:
         id: deployment
         uses: actions/deploy-pages@v4
 
+      # With approval on, the post waits in a GitHub issue that GitHub emails
+      # to the owner; replying "approve" posts it (approve-post.yml).
+      - name: Ask the owner to approve (emailed by GitHub)
+        if: ${{ !inputs.test_run && !inputs.jokes_only && env.APPROVAL_REQUIRED == 'true' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python bot.py --request-approval "${{ steps.deployment.outputs.page_url }}"
+
       - name: Publish to Instagram
-        if: ${{ !inputs.test_run && !inputs.jokes_only }}
+        if: ${{ !inputs.test_run && !inputs.jokes_only && env.APPROVAL_REQUIRED != 'true' }}
         env:
           IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
           IG_USER_ID: ${{ secrets.IG_USER_ID }}
