@@ -16,7 +16,7 @@ on:
       model:
         description: "Joke model (scheduled runs always use the default)"
         type: choice
-        default: qwen35-9b
+        default: qwen35-4b
         options:
           - qwen35-9b
           - qwen35-4b
@@ -43,7 +43,7 @@ env:
   # its published SHA-256 so a changed or corrupt file can't run.
   LLAMA_BUILD: "b11978"
   # Scheduled runs have no inputs, so this is the production model.
-  DEFAULT_MODEL: "qwen3-4b"   # switch after the joke check proves a better one
+  DEFAULT_MODEL: "qwen35-4b"  # won the 2026-10-30 joke check vs qwen35-9b, qwen3-4b
 
 jobs:
   post:

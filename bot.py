@@ -360,8 +360,14 @@ def parse_candidates(text):
         hook = clean_text(str(item.get("hook") or ""), brand.MAX_HOOK_CHARS)
         punch = clean_text(str(item.get("punchline") or ""),
                            brand.MAX_PUNCH_CHARS)
-        if hook and punch:
-            jokes.append({"hook": hook, "punchline": punch})
+        if not (hook and punch):
+            continue
+        text = f"{hook} {punch}".lower().replace("’", "'")
+        hack = next((p for p in brand.BANNED_JOKE_PHRASES if p in text), None)
+        if hack:
+            print(f"  dropped a candidate for using {hack!r}")
+            continue
+        jokes.append({"hook": hook, "punchline": punch})
     return True, jokes
 
 
@@ -397,7 +403,9 @@ def write_post(headline, verbose=False):
     usable, jokes = parse_candidates(call_model(
         [{"role": "system", "content": brand.VOICE + "\n" + WRITER_FORMAT},
          {"role": "user", "content": news}],
-        temperature=1.0, max_tokens=700))
+        # 5 jokes + JSON overhead; at 700 the 9B model's longer jokes were
+        # cut off mid-JSON and the whole batch was lost.
+        temperature=1.0, max_tokens=1200))
     if not usable or not jokes:
         print(f"writer declined or failed on headline: {headline['title']!r}")
         return None

@@ -29,8 +29,9 @@ an unexpected angle.
 
 What makes it funny:
 - Misdirection: set up one meaning, land on another.
-- Oddly specific comparisons to everyday life (rent, group chats, your
-  landlord, the DMV, a printer that only works when you're not looking).
+- Oddly specific comparisons to everyday life — invent a FRESH one that
+  fits this headline. Never use printers, landlords, rent, the DMV, WiFi,
+  or "my job" — those are worn out.
 - Escalation: take the news one step further than reasonable.
 - Treat something huge as tiny, or something tiny as a national crisis.
 - The last few words carry the laugh. End on the funniest word.
@@ -49,8 +50,8 @@ Examples of the tone (do not reuse these):
 
   Headline: Study finds Mondays are linked to higher stress
   Hook: Science confirms Mondays are stressful
-  Punchline: Groundbreaking. Next they'll publish a paper on why my printer
-  waits until I'm late to jam.
+  Punchline: Groundbreaking. Next they'll prove that sand is a little
+  bit dry.
 
   Headline: Lakers blow 20-point lead in overtime loss
   Hook: The Lakers blew a 20-point lead
@@ -78,6 +79,16 @@ Hard rules:
   shown huge on screen — a short, complete sentence beats a long one.
   Longer text overflows the video frame.
 """
+
+# Crutches and hack phrases small models fall back on. The prompt bans them,
+# but models still slip, so any candidate joke containing one (case-
+# insensitive substring) is thrown out in code before the editor sees it.
+BANNED_JOKE_PHRASES = (
+    "printer", "landlord", "the dmv", "wifi", "wi-fi", "my rent", "the rent",
+    "who knew", "just a vibe", "plot twist", "iconic", "slay",
+    "main character", "rent free", "rent-free", "said no one",
+    "in this economy", "losing it", "we're all",
+)
 
 # Topic sources: Google News RSS sections (no API key needed)
 NEWS_FEEDS = {
