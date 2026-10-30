@@ -13,6 +13,10 @@ on:
         description: "Joke check: print jokes for 5 headlines, no render, no post"
         type: boolean
         default: false
+      email_test:
+        description: "Email test: have the bot open a test issue (checks the approval email arrives), nothing else"
+        type: boolean
+        default: false
       model:
         description: "Writer model (scheduled runs always use the defaults)"
         type: choice
@@ -59,7 +63,25 @@ env:
   DEFAULT_EDITOR: "qwen35-9b"  # editor: the 4B approved a looks-based joke
 
 jobs:
+  # GitHub doesn't email you about your own actions, so an issue opened from
+  # the owner's account can't test the approval email — it must come from
+  # the Actions bot, exactly like the real daily request.
+  email-test:
+    if: ${{ inputs.email_test }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Open a test issue as the Actions bot
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue create -R "$GITHUB_REPOSITORY" \
+            --title "Email test from the bot — reply 'test'" \
+            --body "@${GITHUB_REPOSITORY_OWNER} This is how the daily approval emails will look. Nothing will be posted.
+
+          **Reply to this email with the word \`test\`** to confirm reply-by-email works — that's how you'll approve posts."
+
   post:
+    if: ${{ !inputs.email_test }}
     runs-on: ubuntu-latest
     environment:
       name: github-pages
