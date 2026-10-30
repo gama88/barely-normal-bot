@@ -135,7 +135,17 @@ def check_token():
     if resp.ok:
         print(f"token ok for @{resp.json().get('username', '?')}")
         return
-    error = resp.json().get("error", {}) if resp.content else {}
+    try:
+        error = resp.json().get("error", {}) if resp.content else {}
+    except ValueError:
+        error = {}
+    # Meta's own explanation ("Session has expired on ...", "Cannot parse
+    # access token", ...) says whether to regenerate or just re-paste. It
+    # never contains the token itself.
+    print(f"instagram says: HTTP {resp.status_code} "
+          f"type={error.get('type')} code={error.get('code')} "
+          f"subcode={error.get('error_subcode')} "
+          f"message={error.get('message')!r}")
     if error.get("code") == 190:
         print("error: Instagram access token is expired or invalid. Generate a "
               "new one in the Meta app dashboard (Use cases -> Customize -> "
