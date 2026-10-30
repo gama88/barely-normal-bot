@@ -5,4 +5,5 @@ site/
 pending.json
 llm/
 llama-server.log
+token-check.log
 blender-*-linux-x64/
