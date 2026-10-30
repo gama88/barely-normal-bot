@@ -118,6 +118,9 @@ BLOCKED_WORDS = {
     "victim", "victims", "arrested", "charged", "convicted", "sentenced",
     "guilty", "verdict", "trial", "lawsuit", "indicted", "indictment",
     "prison", "jailed", "manslaughter", "assailant",
+    "rape", "raped", "rapes", "rapist", "rapists", "harassment",
+    "harassed", "grooming", "predator", "lawsuits", "sued", "sues",
+    "accused", "allegation", "allegations", "alleged", "allegedly",
     # disaster
     "crash", "crashes", "crashed", "collision", "explosion", "explosions",
     "wildfire", "earthquake", "hurricane", "flood", "floods", "famine",
