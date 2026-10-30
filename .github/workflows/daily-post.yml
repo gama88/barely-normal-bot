@@ -9,6 +9,18 @@ on:
         description: "Test run: write + render only, don't post (video is attached to the run)"
         type: boolean
         default: false
+      jokes_only:
+        description: "Joke check: print jokes for 5 headlines, no render, no post"
+        type: boolean
+        default: false
+      model:
+        description: "Joke model (scheduled runs always use the default)"
+        type: choice
+        default: qwen35-9b
+        options:
+          - qwen35-9b
+          - qwen35-4b
+          - qwen3-4b
 
 permissions:
   contents: write           # to commit posted.json / history.json back
@@ -18,18 +30,20 @@ permissions:
 # One run at a time: two overlapping runs would fight over the Pages site
 # and could publish each other's video.
 concurrency:
-  group: daily-post
+  # Joke checks never touch Pages or Instagram, so each gets its own group
+  # and they can run side by side.
+  group: ${{ inputs.jokes_only && format('jokes-{0}', github.run_id) || 'daily-post' }}
   cancel-in-progress: false
 
 env:
   PYTHONUNBUFFERED: "1"     # stream bot logs live instead of at exit
   BLENDER_VERSION: "4.5.12"
-  # The joke model runs on this machine — no API, key, or account. Both the
-  # engine build and the model file are pinned, and the model is checked
-  # against its published SHA-256 so a changed or corrupt file can't run.
+  # The joke model runs on this machine — no API, key, or account. The engine
+  # build and each model file are pinned, and the model is checked against
+  # its published SHA-256 so a changed or corrupt file can't run.
   LLAMA_BUILD: "b11978"
-  MODEL_URL: "https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/a06e946bb6b655725eafa393f4a9745d460374c9/Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
-  MODEL_SHA256: "3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597"
+  # Scheduled runs have no inputs, so this is the production model.
+  DEFAULT_MODEL: "qwen3-4b"   # switch after the joke check proves a better one
 
 jobs:
   post:
@@ -105,6 +119,27 @@ jobs:
       - name: Add Blender to PATH
         run: echo "$PWD/blender-${BLENDER_VERSION}-linux-x64" >> "$GITHUB_PATH"
 
+      - name: Pick joke model
+        env:
+          CHOSEN: ${{ inputs.model }}
+        run: |
+          set -euo pipefail
+          model="${CHOSEN:-$DEFAULT_MODEL}"
+          case "$model" in
+            qwen35-9b)
+              url="https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/3885219b6810b007914f3a7950a8d1b469d598a5/Qwen3.5-9B-Q4_K_M.gguf"
+              sha="03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8" ;;
+            qwen35-4b)
+              url="https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/e87f176479d0855a907a41277aca2f8ee7a09523/Qwen3.5-4B-Q4_K_M.gguf"
+              sha="00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4" ;;
+            qwen3-4b)
+              url="https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/a06e946bb6b655725eafa393f4a9745d460374c9/Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
+              sha="3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597" ;;
+            *) echo "unknown model: $model" >&2; exit 1 ;;
+          esac
+          echo "joke model: $model"
+          { echo "MODEL_URL=$url"; echo "MODEL_SHA256=$sha"; } >> "$GITHUB_ENV"
+
       - name: Restore joke model
         id: cache-llm
         uses: actions/cache/restore@v4
@@ -150,19 +185,23 @@ jobs:
           tail -n 40 llama-server.log >&2
           exit 1
 
+      - name: Joke check — jokes for 5 headlines, nothing else
+        if: ${{ inputs.jokes_only }}
+        run: python bot.py --jokes 5
+
       - name: Test run — write and render only
-        if: ${{ inputs.test_run }}
+        if: ${{ inputs.test_run && !inputs.jokes_only }}
         run: xvfb-run -a python bot.py --dry-run
 
       - name: Attach test video to this run
-        if: ${{ inputs.test_run }}
+        if: ${{ inputs.test_run && !inputs.jokes_only }}
         uses: actions/upload-artifact@v4
         with:
           name: test-post
           path: out/
 
       - name: Write and render today's post
-        if: ${{ !inputs.test_run }}
+        if: ${{ !inputs.test_run && !inputs.jokes_only }}
         env:
           IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
           IG_USER_ID: ${{ secrets.IG_USER_ID }}
@@ -172,18 +211,18 @@ jobs:
       # video is served from GitHub Pages. Each deploy replaces the whole
       # site, so only today's file is ever public there.
       - name: Upload media for Pages
-        if: ${{ !inputs.test_run }}
+        if: ${{ !inputs.test_run && !inputs.jokes_only }}
         uses: actions/upload-pages-artifact@v3
         with:
           path: site
 
       - name: Deploy media to Pages
-        if: ${{ !inputs.test_run }}
+        if: ${{ !inputs.test_run && !inputs.jokes_only }}
         id: deployment
         uses: actions/deploy-pages@v4
 
       - name: Publish to Instagram
-        if: ${{ !inputs.test_run }}
+        if: ${{ !inputs.test_run && !inputs.jokes_only }}
         env:
           IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
           IG_USER_ID: ${{ secrets.IG_USER_ID }}

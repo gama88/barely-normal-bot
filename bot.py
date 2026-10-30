@@ -254,24 +254,51 @@ def pick_topics(headlines, posted):
 
 # ------------------------------------------------------------ joke writer ---
 
-OUTPUT_FORMAT = f"""
-Reply with ONLY a JSON object, no other text, with exactly these keys:
-  "usable":    true or false — false if the headline is not joke material
-  "hook":      short punchy setup shown large on screen, at most
-               {brand.MAX_HOOK_CHARS} characters, no emoji
-  "punchline": the joke/take, at most {brand.MAX_PUNCH_CHARS} characters,
-               no emoji
-  "caption":   1-2 sentence Instagram caption continuing the bit
-  "hashtags":  list of 5-8 single-word hashtags, without the # symbol
-If "usable" is false, the other values may be empty strings / an empty list.
+# A small model's average joke is weak but its best-of-several is much
+# better, so one call writes several distinct jokes and a second call acts as
+# a strict editor that picks one (or rejects them all).
+JOKE_CANDIDATES = 5
+DEFAULT_HASHTAGS = ["memes", "funny", "entertainment", "popculture", "trending"]
+
+WRITER_FORMAT = f"""
+Write {JOKE_CANDIDATES} different jokes about the headline. Each one must use
+a DIFFERENT angle or technique — not five versions of the same joke.
+
+Reply with ONLY a JSON object, no other text:
+{{"usable": true, "jokes": [{{"hook": "...", "punchline": "..."}}, ...]}}
+- hook: under 70 characters, no emoji
+- punchline: under 120 characters, no emoji
+If the headline is not joke material per the rules, reply exactly:
+{{"usable": false, "jokes": []}}
 """
 
+EDITOR_SYSTEM = """You are the head writer of a comedy Instagram page. You are
+ruthless: most jokes are not good enough, and posting a weak or risky joke is
+worse than posting nothing.
 
-def call_model(messages):
+Pick the single funniest joke. Reject (never pick) any joke that:
+- states a specific fact the headline doesn't give (dates, past roles,
+  relationships, quotes, numbers) — exaggeration is fine, false facts aren't
+- is mean about someone's body, family, health, or identity
+- explains itself, or uses a hack phrase ("who knew", "just a vibe",
+  "plot twist", "iconic", "main character", "in this economy")
+- doesn't actually have a punchline
+If none of them is genuinely funny AND safe, choose 0.
+
+Then write a 1-2 sentence Instagram caption that continues the bit without
+repeating the punchline (one emoji allowed), and 5-8 single-word hashtags
+without the # symbol.
+
+Reply with ONLY a JSON object, no other text:
+{"best": <joke number, or 0>, "caption": "...", "hashtags": ["..."]}"""
+
+
+def call_model(messages, temperature=0.9, max_tokens=400):
     """Ask the local llama-server for a completion. Returns the reply text.
 
     llama-server speaks the OpenAI chat format; `response_format` json_object
-    makes it constrain sampling to valid JSON.
+    makes it constrain sampling to valid JSON. Thinking is switched off: it
+    costs minutes on a CPU and doesn't help a two-line joke.
     """
     last_error = None
     for attempt in range(1, LLM_ATTEMPTS + 1):
@@ -281,8 +308,9 @@ def call_model(messages):
                 headers={"Content-Type": "application/json"},
                 json={"messages": messages,
                       "response_format": {"type": "json_object"},
-                      "temperature": 0.9, "top_p": 0.95,
-                      "max_tokens": 400},
+                      "temperature": temperature, "top_p": 0.95,
+                      "max_tokens": max_tokens,
+                      "chat_template_kwargs": {"enable_thinking": False}},
                 timeout=LLM_TIMEOUT_SECONDS,
             )
             resp.raise_for_status()
@@ -294,65 +322,114 @@ def call_model(messages):
     raise RuntimeError(f"joke model unavailable: {last_error}")
 
 
-def parse_post(text):
-    """Validate the model's JSON. Returns dict, or None if unusable/invalid."""
+def load_json_object(text):
+    """Parse a JSON object from a model reply, tolerating fences/prose."""
+    text = re.sub(r"<think>.*?</think>", "", text or "", flags=re.S)
     try:
         data = json.loads(text)
     except json.JSONDecodeError:
-        # Some models wrap JSON in prose or a code fence; take the object.
-        match = re.search(r"\{.*\}", text or "", re.S)
+        match = re.search(r"\{.*\}", text, re.S)
         if not match:
-            print("model reply had no JSON object")
             return None
         try:
             data = json.loads(match.group(0))
         except json.JSONDecodeError:
-            print("model reply JSON was malformed")
             return None
-    if not isinstance(data, dict):
-        return None
+    return data if isinstance(data, dict) else None
 
-    usable = data.get("usable")
-    if isinstance(usable, str):
-        usable = usable.strip().lower() == "true"
-    if usable is not True:
-        return None
 
+def as_bool(value):
+    if isinstance(value, str):
+        return value.strip().lower() == "true"
+    return value is True
+
+
+def parse_candidates(text):
+    """Writer reply -> (usable, [{'hook', 'punchline'}, ...])."""
+    data = load_json_object(text)
+    if data is None:
+        print("writer reply had no valid JSON")
+        return False, []
+    if not as_bool(data.get("usable")):
+        return False, []
+    jokes = []
+    for item in data.get("jokes") or []:
+        if not isinstance(item, dict):
+            continue
+        # Enforce limits in code — models don't reliably count characters.
+        hook = clean_text(str(item.get("hook") or ""), brand.MAX_HOOK_CHARS)
+        punch = clean_text(str(item.get("punchline") or ""),
+                           brand.MAX_PUNCH_CHARS)
+        if hook and punch:
+            jokes.append({"hook": hook, "punchline": punch})
+    return True, jokes
+
+
+def parse_pick(text, count):
+    """Editor reply -> (index or None for "reject all", caption, hashtags).
+
+    Raises ValueError if the reply is unusable, so the caller can fall back.
+    """
+    data = load_json_object(text)
+    if data is None:
+        raise ValueError("editor reply had no valid JSON")
+    try:
+        best = int(data.get("best"))
+    except (TypeError, ValueError):
+        raise ValueError(f"editor gave no valid pick: {data.get('best')!r}")
+    if best == 0:
+        return None, "", []
+    if not 1 <= best <= count:
+        raise ValueError(f"editor pick {best} out of range 1-{count}")
     hashtags = data.get("hashtags")
     if isinstance(hashtags, str):
         hashtags = hashtags.replace(",", " ").split()
     if not isinstance(hashtags, list):
         hashtags = []
-
-    post = {
-        "usable": True,
-        # Enforce limits in code — models don't reliably count characters.
-        "hook": clean_text(str(data.get("hook") or ""), brand.MAX_HOOK_CHARS),
-        "punchline": clean_text(str(data.get("punchline") or ""),
-                                brand.MAX_PUNCH_CHARS),
-        "caption": str(data.get("caption") or ""),
-        "hashtags": [str(t) for t in hashtags],
-    }
-    if not post["hook"] or not post["punchline"]:
-        print("model returned empty hook/punchline after cleaning")
-        return None
-    return post
+    return best - 1, str(data.get("caption") or ""), [str(t) for t in hashtags]
 
 
-def write_post(headline):
+def write_post(headline, verbose=False):
     """Get the joke. Returns dict, or None if the headline is unusable."""
-    text = call_model([
-        {"role": "system", "content": brand.VOICE + "\n" + OUTPUT_FORMAT},
-        {"role": "user", "content": (
-            "Today's trending headline:\n"
-            f"\"{headline['title']}\" (category: {headline['feed']})\n\n"
-            "Write the post. If this headline shouldn't be joked about "
-            "per your rules, set usable to false.")},
-    ])
-    post = parse_post(text)
-    if post is None:
-        print(f"model declined or failed on headline: {headline['title']!r}")
-    return post
+    news = (f"Headline: \"{headline['title']}\" "
+            f"(category: {headline['feed']})")
+
+    usable, jokes = parse_candidates(call_model(
+        [{"role": "system", "content": brand.VOICE + "\n" + WRITER_FORMAT},
+         {"role": "user", "content": news}],
+        temperature=1.0, max_tokens=700))
+    if not usable or not jokes:
+        print(f"writer declined or failed on headline: {headline['title']!r}")
+        return None
+    if verbose:
+        for n, j in enumerate(jokes, 1):
+            print(f"  {n}. {j['hook']} / {j['punchline']}")
+
+    numbered = "\n".join(f"{n}. HOOK: {j['hook']}\n   PUNCHLINE: {j['punchline']}"
+                         for n, j in enumerate(jokes, 1))
+    try:
+        index, caption, hashtags = parse_pick(call_model(
+            [{"role": "system", "content": EDITOR_SYSTEM},
+             {"role": "user", "content": f"{news}\n\nJokes:\n{numbered}"}],
+            temperature=0.2, max_tokens=300), len(jokes))
+    except (ValueError, RuntimeError) as exc:
+        # A broken editor shouldn't sink an otherwise good batch.
+        print(f"warning: editor failed ({exc}); using the first joke")
+        index, caption, hashtags = 0, "", []
+
+    if index is None:
+        print(f"editor rejected every joke for: {headline['title']!r}")
+        return None
+    chosen = jokes[index]
+    if verbose:
+        print(f"  -> editor picked #{index + 1}")
+    return {
+        "usable": True,
+        "hook": chosen["hook"],
+        "punchline": chosen["punchline"],
+        "caption": caption or chosen["punchline"],
+        "hashtags": hashtags or list(DEFAULT_HASHTAGS),
+    }
 
 
 def canned_post(headline):
@@ -690,7 +767,21 @@ def main():
     args = sys.argv[1:]
     load_env_file()
 
-    if "--dry-run" in args:
+    if "--jokes" in args:
+        # Joke-quality check: show every candidate and the editor's pick for
+        # several real headlines, without rendering anything.
+        idx = args.index("--jokes")
+        count = int(args[idx + 1]) if idx + 1 < len(args) else 5
+        topics = pick_topics(fetch_headlines(), load_posted())[:count]
+        for topic in topics:
+            print(f"\n=== {topic['title']}  [{topic['feed']}]")
+            started = time.time()
+            post = write_post(topic, verbose=True)
+            if post:
+                print(f"  POST: {post['hook']} / {post['punchline']}")
+                print(f"  CAPTION: {post['caption']}")
+            print(f"  ({time.time() - started:.0f}s)")
+    elif "--dry-run" in args:
         prepare(dry_run=True)
     elif "--prepare" in args:
         require_env()
