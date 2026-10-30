@@ -47,7 +47,9 @@ SITE_DIR = Path(__file__).parent / "site"
 URL_WAIT_SECONDS = 300
 GRAPH = "https://graph.instagram.com/v21.0"
 USER_AGENT = "Mozilla/5.0 (barely-normal-bot/2.0)"
-MAX_TOPICS_TO_TRY = 3
+# The writer declines sensitive headlines and the editor can reject a whole
+# batch, so allow plenty of tries; each costs about a minute on CI.
+MAX_TOPICS_TO_TRY = 8
 BLENDER_TIMEOUT_SECONDS = 3000
 FFMPEG_TIMEOUT_SECONDS = 300
 CONTAINER_POLL_SECONDS = 600
@@ -272,18 +274,21 @@ If the headline is not joke material per the rules, reply exactly:
 {{"usable": false, "jokes": []}}
 """
 
-EDITOR_SYSTEM = """You are the head writer of a comedy Instagram page. You are
-ruthless: most jokes are not good enough, and posting a weak or risky joke is
-worse than posting nothing.
+EDITOR_SYSTEM = """You are the head writer of a comedy Instagram page that posts
+one joke every day. Your job has two steps.
 
-Pick the single funniest joke. Reject (never pick) any joke that:
+Step 1 — safety. A joke is DISQUALIFIED if it:
 - states a specific fact the headline doesn't give (dates, past roles,
-  relationships, quotes, numbers) — exaggeration is fine, false facts aren't
-- is mean about someone's body, family, health, or identity
-- explains itself, or uses a hack phrase ("who knew", "just a vibe",
-  "plot twist", "iconic", "main character", "in this economy")
-- doesn't actually have a punchline
-If none of them is genuinely funny AND safe, choose 0.
+  relationships, quotes, numbers) — obvious exaggeration is fine
+- mocks someone's body, looks, hair, age, family, health, or identity
+- has no joke in it at all (just restates or comments on the news)
+
+Step 2 — quality. Among the jokes that are NOT disqualified, pick the
+funniest: the most surprising angle, the tightest wording, the strongest
+last few words. It does not need to be perfect — the page has to post
+every day, so choose the best one available.
+
+Choose 0 ONLY if every single joke is disqualified in step 1.
 
 Then write a 1-2 sentence Instagram caption that continues the bit without
 repeating the punchline (one emoji allowed), and 5-8 single-word hashtags
