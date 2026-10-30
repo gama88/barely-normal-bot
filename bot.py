@@ -63,6 +63,9 @@ REQUIRED_ENV = ("IG_ACCESS_TOKEN", "IG_USER_ID")
 # cost — nothing external that can be retired or start charging.
 LLM_URL = os.environ.get("LLM_URL",
                          "http://127.0.0.1:8080/v1/chat/completions")
+# The editor can be a different, smarter model on its own server; when it
+# isn't configured, the writer's server does both jobs.
+EDITOR_LLM_URL = os.environ.get("EDITOR_LLM_URL") or LLM_URL
 LLM_ATTEMPTS = 2
 LLM_TIMEOUT_SECONDS = 300    # CPU inference: generous, it's a ~4B model
 
@@ -233,7 +236,7 @@ def is_blocked(title):
         return True
     tokens = normalized.split()
     for tok in tokens:
-        if tok in brand.BLOCKED_WORDS:
+        if tok in brand.BLOCKED_WORDS or tok in brand.APPEARANCE_WORDS:
             return True
         if tok.startswith(brand.BLOCKED_PREFIXES):
             return True
@@ -298,7 +301,7 @@ Reply with ONLY a JSON object, no other text:
 {"best": <joke number, or 0>, "caption": "...", "hashtags": ["..."]}"""
 
 
-def call_model(messages, temperature=0.9, max_tokens=400):
+def call_model(messages, temperature=0.9, max_tokens=400, url=None):
     """Ask the local llama-server for a completion. Returns the reply text.
 
     llama-server speaks the OpenAI chat format; `response_format` json_object
@@ -309,7 +312,7 @@ def call_model(messages, temperature=0.9, max_tokens=400):
     for attempt in range(1, LLM_ATTEMPTS + 1):
         try:
             resp = requests.post(
-                LLM_URL,
+                url or LLM_URL,
                 headers={"Content-Type": "application/json"},
                 json={"messages": messages,
                       "response_format": {"type": "json_object"},
@@ -424,7 +427,7 @@ def write_post(headline, verbose=False):
         index, caption, hashtags = parse_pick(call_model(
             [{"role": "system", "content": EDITOR_SYSTEM},
              {"role": "user", "content": f"{news}\n\nJokes:\n{numbered}"}],
-            temperature=0.2, max_tokens=300), len(jokes))
+            temperature=0.2, max_tokens=300, url=EDITOR_LLM_URL), len(jokes))
     except (ValueError, RuntimeError) as exc:
         # A broken editor shouldn't sink an otherwise good batch.
         print(f"warning: editor failed ({exc}); using the first joke")

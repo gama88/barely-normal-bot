@@ -14,9 +14,17 @@ on:
         type: boolean
         default: false
       model:
-        description: "Joke model (scheduled runs always use the default)"
+        description: "Writer model (scheduled runs always use the defaults)"
         type: choice
         default: qwen35-4b
+        options:
+          - qwen35-9b
+          - qwen35-4b
+          - qwen3-4b
+      editor_model:
+        description: "Editor model"
+        type: choice
+        default: qwen35-9b
         options:
           - qwen35-9b
           - qwen35-4b
@@ -42,8 +50,9 @@ env:
   # build and each model file are pinned, and the model is checked against
   # its published SHA-256 so a changed or corrupt file can't run.
   LLAMA_BUILD: "b11978"
-  # Scheduled runs have no inputs, so this is the production model.
-  DEFAULT_MODEL: "qwen35-4b"  # won the 2026-10-30 joke check vs qwen35-9b, qwen3-4b
+  # Scheduled runs have no inputs, so these are the production models.
+  DEFAULT_MODEL: "qwen35-4b"   # writer: best jokes in the 2026-10-30 check
+  DEFAULT_EDITOR: "qwen35-9b"  # editor: the 4B approved a looks-based joke
 
 jobs:
   post:
@@ -119,36 +128,42 @@ jobs:
       - name: Add Blender to PATH
         run: echo "$PWD/blender-${BLENDER_VERSION}-linux-x64" >> "$GITHUB_PATH"
 
-      - name: Pick joke model
+      # Two roles: a fast model writes 5 candidate jokes, a smarter one acts
+      # as editor (safety veto + picking the best). Each model file is pinned
+      # and SHA-256 verified; the engine and each model are cached separately.
+      - name: Pick joke models
         env:
-          CHOSEN: ${{ inputs.model }}
+          CHOSEN_WRITER: ${{ inputs.model }}
+          CHOSEN_EDITOR: ${{ inputs.editor_model }}
         run: |
           set -euo pipefail
-          model="${CHOSEN:-$DEFAULT_MODEL}"
-          case "$model" in
-            qwen35-9b)
-              url="https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/3885219b6810b007914f3a7950a8d1b469d598a5/Qwen3.5-9B-Q4_K_M.gguf"
-              sha="03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8" ;;
-            qwen35-4b)
-              url="https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/e87f176479d0855a907a41277aca2f8ee7a09523/Qwen3.5-4B-Q4_K_M.gguf"
-              sha="00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4" ;;
-            qwen3-4b)
-              url="https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/a06e946bb6b655725eafa393f4a9745d460374c9/Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
-              sha="3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597" ;;
-            *) echo "unknown model: $model" >&2; exit 1 ;;
-          esac
-          echo "joke model: $model"
-          { echo "MODEL_URL=$url"; echo "MODEL_SHA256=$sha"; } >> "$GITHUB_ENV"
+          resolve() {
+            case "$1" in
+              qwen35-9b) echo "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/3885219b6810b007914f3a7950a8d1b469d598a5/Qwen3.5-9B-Q4_K_M.gguf 03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8" ;;
+              qwen35-4b) echo "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/e87f176479d0855a907a41277aca2f8ee7a09523/Qwen3.5-4B-Q4_K_M.gguf 00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4" ;;
+              qwen3-4b)  echo "https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/a06e946bb6b655725eafa393f4a9745d460374c9/Qwen3-4B-Instruct-2507-Q4_K_M.gguf 3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597" ;;
+              *) echo "unknown model: $1" >&2; return 1 ;;
+            esac
+          }
+          writer="${CHOSEN_WRITER:-$DEFAULT_MODEL}"
+          editor="${CHOSEN_EDITOR:-$DEFAULT_EDITOR}"
+          read -r wurl wsha <<< "$(resolve "$writer")"
+          read -r eurl esha <<< "$(resolve "$editor")"
+          echo "writer: $writer   editor: $editor"
+          {
+            echo "WRITER_URL=$wurl"; echo "WRITER_SHA256=$wsha"
+            echo "EDITOR_URL=$eurl"; echo "EDITOR_SHA256=$esha"
+          } >> "$GITHUB_ENV"
 
-      - name: Restore joke model
-        id: cache-llm
+      - name: Restore llama.cpp
+        id: cache-engine
         uses: actions/cache/restore@v4
         with:
-          path: llm
-          key: llm-${{ env.LLAMA_BUILD }}-${{ env.MODEL_SHA256 }}
+          path: llm/llama-${{ env.LLAMA_BUILD }}
+          key: llama-engine-${{ env.LLAMA_BUILD }}
 
-      - name: Download joke model
-        if: steps.cache-llm.outputs.cache-hit != 'true'
+      - name: Download llama.cpp
+        if: steps.cache-engine.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
           mkdir -p llm
@@ -156,34 +171,82 @@ jobs:
             "https://github.com/ggml-org/llama.cpp/releases/download/${LLAMA_BUILD}/llama-${LLAMA_BUILD}-bin-ubuntu-x64.tar.gz"
           tar -xzf llama.tar.gz -C llm
           rm -f llama.tar.gz
-          curl -fsSL --retry 3 -o llm/model.gguf "${MODEL_URL}"
-          echo "${MODEL_SHA256}  llm/model.gguf" | sha256sum -c -
 
-      - name: Save joke model
-        if: steps.cache-llm.outputs.cache-hit != 'true'
+      - name: Save llama.cpp
+        if: steps.cache-engine.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
-          path: llm
-          key: llm-${{ env.LLAMA_BUILD }}-${{ env.MODEL_SHA256 }}
+          path: llm/llama-${{ env.LLAMA_BUILD }}
+          key: llama-engine-${{ env.LLAMA_BUILD }}
 
-      - name: Start joke model server
+      - name: Restore writer model
+        id: cache-writer
+        uses: actions/cache/restore@v4
+        with:
+          path: llm/models/${{ env.WRITER_SHA256 }}.gguf
+          key: gguf-${{ env.WRITER_SHA256 }}
+
+      - name: Download writer model
+        if: steps.cache-writer.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p llm/models
+          f="llm/models/${WRITER_SHA256}.gguf"
+          curl -fsSL --retry 3 -o "$f" "${WRITER_URL}"
+          echo "${WRITER_SHA256}  $f" | sha256sum -c -
+
+      - name: Save writer model
+        if: steps.cache-writer.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: llm/models/${{ env.WRITER_SHA256 }}.gguf
+          key: gguf-${{ env.WRITER_SHA256 }}
+
+      - name: Restore editor model
+        id: cache-editor
+        if: env.EDITOR_SHA256 != env.WRITER_SHA256
+        uses: actions/cache/restore@v4
+        with:
+          path: llm/models/${{ env.EDITOR_SHA256 }}.gguf
+          key: gguf-${{ env.EDITOR_SHA256 }}
+
+      - name: Download editor model
+        if: env.EDITOR_SHA256 != env.WRITER_SHA256 && steps.cache-editor.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p llm/models
+          f="llm/models/${EDITOR_SHA256}.gguf"
+          curl -fsSL --retry 3 -o "$f" "${EDITOR_URL}"
+          echo "${EDITOR_SHA256}  $f" | sha256sum -c -
+
+      - name: Save editor model
+        if: env.EDITOR_SHA256 != env.WRITER_SHA256 && steps.cache-editor.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: llm/models/${{ env.EDITOR_SHA256 }}.gguf
+          key: gguf-${{ env.EDITOR_SHA256 }}
+
+      - name: Start joke model servers
         run: |
           set -euo pipefail
           bin="$PWD/llm/llama-${LLAMA_BUILD}"
           export LD_LIBRARY_PATH="${bin}:${LD_LIBRARY_PATH:-}"
-          nohup "${bin}/llama-server" -m llm/model.gguf \
-            --host 127.0.0.1 --port 8080 -c 4096 -t "$(nproc)" \
-            > llama-server.log 2>&1 &
-          for i in $(seq 1 90); do
-            if curl -sf http://127.0.0.1:8080/health > /dev/null; then
-              echo "model server ready after ~$((i * 2))s"
-              exit 0
-            fi
-            sleep 2
-          done
-          echo "model server failed to start:" >&2
-          tail -n 40 llama-server.log >&2
-          exit 1
+          start() {  # model-sha port logfile
+            nohup "${bin}/llama-server" -m "llm/models/$1.gguf" \
+              --host 127.0.0.1 --port "$2" -c 4096 -t "$(nproc)" > "$3" 2>&1 &
+            for i in $(seq 1 120); do
+              if curl -sf "http://127.0.0.1:$2/health" > /dev/null; then
+                echo "server on :$2 ready after ~$((i * 2))s"; return 0
+              fi
+              sleep 2
+            done
+            echo "server on :$2 failed to start:" >&2; tail -n 40 "$3" >&2; return 1
+          }
+          start "$WRITER_SHA256" 8080 llama-server.log
+          if [ "$EDITOR_SHA256" != "$WRITER_SHA256" ]; then
+            start "$EDITOR_SHA256" 8081 llama-editor.log
+            echo "EDITOR_LLM_URL=http://127.0.0.1:8081/v1/chat/completions" >> "$GITHUB_ENV"
+          fi
 
       - name: Joke check — jokes for 5 headlines, nothing else
         if: ${{ inputs.jokes_only }}
@@ -230,7 +293,11 @@ jobs:
 
       - name: Show joke model log (on failure)
         if: failure()
-        run: tail -n 60 llama-server.log 2>/dev/null || echo "no model log"
+        run: |
+          for f in llama-server.log llama-editor.log; do
+            [ -f "$f" ] && { echo "=== $f"; tail -n 40 "$f"; }
+          done
+          true
 
       - name: Commit posted history
         # always(): when a publish may have gone through but couldn't be

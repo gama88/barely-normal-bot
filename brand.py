@@ -152,7 +152,20 @@ BLOCKED_PREFIXES = (
 # Euphemisms for death that contain no blocked word on their own — e.g. a
 # real headline seen in testing: "...before ending life with medical
 # assistance". Matched as plain substrings of the lowercased headline.
+# Stories about someone's looks almost always produce jokes that mock their
+# looks (a test run picked "she looks like she survived a tornado" about an
+# actress's new hair). Skip them up front instead of trusting the model.
+APPEARANCE_WORDS = {
+    "hair", "haircut", "hairstyle", "hairdo", "curly", "curls", "bald",
+    "balding", "blonde", "brunette", "transformation", "unrecognizable",
+    "weight", "body", "bodies", "figure", "physique", "bikini", "swimsuit",
+    "makeup", "wrinkles", "aging", "ageing", "botox", "facelift", "surgery",
+    "slimmed", "slimmer", "thinner", "pounds",
+}
+
 BLOCKED_PHRASES = (
+    "weight loss", "lost weight", "plastic surgery", "no makeup",
+    "makeup free", "makeup-free", "new look", "unrecognizable",
     "ending life", "ended life", "ends life", "end her life", "end his life",
     "end their life", "ended her life", "ended his life", "ended their life",
     "end of life", "medical assistance in dying", "assisted dying",
