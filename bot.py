@@ -142,6 +142,10 @@ def check_token():
     # Meta's own explanation ("Session has expired on ...", "Cannot parse
     # access token", ...) says whether to regenerate or just re-paste. It
     # never contains the token itself.
+    odd = sorted({f"U+{ord(c):04X}" for c in token
+                  if not (c.isascii() and (c.isalnum() or c in "-_"))})
+    print(f"token shape: {len(token)} chars, starts {token[:4]!r}, "
+          f"unexpected characters: {odd or 'none'}")
     print(f"instagram says: HTTP {resp.status_code} "
           f"type={error.get('type')} code={error.get('code')} "
           f"subcode={error.get('error_subcode')} "
@@ -979,9 +983,11 @@ def main():
     # Secrets saved from Windows can carry a trailing CRLF (PowerShell 5.1
     # appends one when piping to a program), which Instagram rejects as
     # "Cannot parse access token". Tokens and IDs never contain whitespace.
+    # A UTF-8 byte-order mark (U+FEFF) can sneak in the same way, and
+    # str.strip() doesn't remove it.
     for name in ("IG_ACCESS_TOKEN", "IG_USER_ID"):
         if name in os.environ:
-            os.environ[name] = os.environ[name].strip()
+            os.environ[name] = os.environ[name].strip().strip("﻿").strip()
 
     if "--jokes" in args:
         # Joke-quality check: show every candidate and the editor's pick for
