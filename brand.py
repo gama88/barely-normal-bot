@@ -34,7 +34,8 @@ Hard rules:
 - NO EMOJI in "hook" or "punchline" — those are rendered with fonts that have
   no emoji glyphs and would show as empty boxes. A single emoji in "caption"
   is fine.
-- Respect the length limits exactly: hook <= 60 characters, punchline <= 120.
+- Keep it short: hook under 70 characters, punchline under 120. The hook is
+  shown huge on screen — a short, complete sentence beats a long one.
   Longer text overflows the video frame.
 """
 
@@ -94,6 +95,19 @@ BLOCKED_PREFIXES = (
     "abduct",       # abduct, abducted, abduction
     "tragic", "tragedy", "tragedies",
     "bombing",      # bombing, bombings ("bomb" alone hits "bombshell")
+    "euthan",       # euthanasia, euthanized
+)
+
+# Euphemisms for death that contain no blocked word on their own — e.g. a
+# real headline seen in testing: "...before ending life with medical
+# assistance". Matched as plain substrings of the lowercased headline.
+BLOCKED_PHRASES = (
+    "ending life", "ended life", "ends life", "end her life", "end his life",
+    "end their life", "ended her life", "ended his life", "ended their life",
+    "end of life", "medical assistance in dying", "assisted dying",
+    "passed away", "passes away", "pass away", "laid to rest", "rest in peace",
+    "final public appearance", "last public appearance", "lost her battle",
+    "lost his battle", "lost their battle", "life support", "in memoriam",
 )
 
 # Video settings for the Blender reel
@@ -105,7 +119,9 @@ REEL = {
 }
 
 # Hard limits enforced in code (not just requested of the model)
-MAX_HOOK_CHARS = 60
+# The model is asked for <70 but small models overshoot; clipping mid-sentence
+# reads badly on screen, so allow headroom (the renderers auto-shrink the font).
+MAX_HOOK_CHARS = 90
 MAX_PUNCH_CHARS = 120
 MAX_CAPTION_CHARS = 2000     # Instagram hard limit is 2200 incl. hashtags
 MAX_HASHTAGS = 25            # Instagram hard limit is 30

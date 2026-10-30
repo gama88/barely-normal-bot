@@ -22,6 +22,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  PYTHONUNBUFFERED: "1"     # stream bot logs live instead of at exit
   BLENDER_VERSION: "4.5.12"
   # The joke model runs on this machine — no API, key, or account. Both the
   # engine build and the model file are pinned, and the model is checked

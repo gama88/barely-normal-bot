@@ -143,7 +143,10 @@ def main():
         except TypeError:
             continue
     try:
-        scene.eevee.taa_render_samples = 16
+        # CI runners have no GPU, so EEVEE runs on Mesa's software rasterizer
+        # and cost scales with samples. 16 took ~45 min for 210 frames; flat
+        # emissive text on a dark background looks the same at 4.
+        scene.eevee.taa_render_samples = 4
     except Exception:
         pass
 

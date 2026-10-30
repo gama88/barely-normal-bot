@@ -225,7 +225,11 @@ def is_blocked(title):
     """True if the headline looks like tragedy/crime and must not be a joke."""
     # Apostrophes are stripped rather than kept in the token, so possessives
     # ("victim's") normalize to the base word and still match.
-    tokens = re.findall(r"[a-z]+", title.lower().replace("'", "").replace("\u2019", ""))
+    lowered = title.lower().replace("'", "").replace("\u2019", "")
+    normalized = " ".join(re.findall(r"[a-z]+", lowered))
+    if any(phrase in normalized for phrase in brand.BLOCKED_PHRASES):
+        return True
+    tokens = normalized.split()
     for tok in tokens:
         if tok in brand.BLOCKED_WORDS:
             return True
@@ -553,8 +557,10 @@ def post_to_instagram(kind, media_url, caption, before_publish=None):
 
 def make_post(topic, work_dir, dry_run):
     """Write and render one post. Returns (post, kind, media, caption) or None."""
+    started = time.time()
     try:
         post = write_post(topic)
+        print(f"timing: joke {time.time() - started:.0f}s")
     except RuntimeError as exc:
         if not dry_run:
             raise
@@ -564,7 +570,9 @@ def make_post(topic, work_dir, dry_run):
     if post is None:
         return None
 
+    started = time.time()
     media = render_reel(post, work_dir)
+    print(f"timing: render {time.time() - started:.0f}s")
     kind = "video"
     if media is None:
         media = render_card(post, work_dir)
