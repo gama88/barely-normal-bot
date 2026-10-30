@@ -1,8 +1,15 @@
 name: Daily Instagram Post
 
 on:
+  # GitHub runs schedules best-effort: on 2026-10-29 the 17:00 run started
+  # ~5 h late and on 2026-10-30 it never started at all. So: several tries a
+  # day, off the top of the hour (the busiest, most-delayed slot), and the
+  # `gate` job makes every try after the first successful one a no-op.
   schedule:
-    - cron: "0 17 * * *"   # ~noon US Central, daily
+    - cron: "7 17 * * *"    # 1:07 PM EDT / 12:07 PM EST
+    - cron: "37 18 * * *"   # retry
+    - cron: "7 20 * * *"    # retry
+    - cron: "37 21 * * *"   # retry
   workflow_dispatch:        # allow manual runs from the Actions tab
     inputs:
       test_run:
@@ -80,8 +87,42 @@ jobs:
 
           **Reply to this email with the word \`test\`** to confirm reply-by-email works — that's how you'll approve posts."
 
-  post:
+  # Scheduled tries stop here if today's post was already requested or
+  # published. Manual runs always go ahead.
+  gate:
     if: ${{ !inputs.email_test }}
+    runs-on: ubuntu-latest
+    outputs:
+      go: ${{ steps.check.outputs.go }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Already done today?
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -uo pipefail
+          if [ "$EVENT" != "schedule" ]; then
+            echo "manual run — going ahead"; echo "go=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          today=$(date -u +%Y-%m-%d)
+          requests=$(gh issue list -R "$GITHUB_REPOSITORY" --label post-approval \
+            --state all --search "created:>=${today}" --json number --jq length \
+            2>/dev/null || echo 0)
+          posts=$(python3 -c "import json; print(sum(1 for r in json.load(open('history.json')) if str(r.get('posted_at', '')).startswith('${today}')))" \
+            2>/dev/null || echo 0)
+          echo "today ${today}: approval requests=${requests}, posts=${posts}"
+          if [ "${requests:-0}" -gt 0 ] || [ "${posts:-0}" -gt 0 ]; then
+            echo "already done today — skipping"; echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  post:
+    needs: gate
+    if: ${{ needs.gate.outputs.go == 'true' && !inputs.email_test }}
     runs-on: ubuntu-latest
     environment:
       name: github-pages
