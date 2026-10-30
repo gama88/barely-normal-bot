@@ -976,6 +976,12 @@ def publish(base_url):
 def main():
     args = sys.argv[1:]
     load_env_file()
+    # Secrets saved from Windows can carry a trailing CRLF (PowerShell 5.1
+    # appends one when piping to a program), which Instagram rejects as
+    # "Cannot parse access token". Tokens and IDs never contain whitespace.
+    for name in ("IG_ACCESS_TOKEN", "IG_USER_ID"):
+        if name in os.environ:
+            os.environ[name] = os.environ[name].strip()
 
     if "--jokes" in args:
         # Joke-quality check: show every candidate and the editor's pick for

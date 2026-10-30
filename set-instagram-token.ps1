@@ -47,7 +47,15 @@ if (-not $me.username) {
 }
 "$(Get-Date -Format s) instagram accepted token for @$($me.username)" | Out-File $log -Append -Encoding utf8
 Write-Host "Instagram accepts it - it belongs to @$($me.username)" -ForegroundColor Green
-$token | gh secret set IG_ACCESS_TOKEN -R $repo
+# Not `$token | gh ...`: Windows PowerShell appends CRLF when piping to a
+# program, and the saved secret then includes it. Hand gh a file with the
+# exact bytes instead (deleted right after).
+$tmp = [System.IO.Path]::GetTempFileName()
+[System.IO.File]::WriteAllText($tmp, $token, (New-Object System.Text.UTF8Encoding $false))
+cmd /c "gh secret set IG_ACCESS_TOKEN -R $repo < `"$tmp`""
+$saved = $LASTEXITCODE
+Remove-Item $tmp -Force
+$global:LASTEXITCODE = $saved
 if ($LASTEXITCODE -ne 0) { Stop-Here "Couldn't save it to GitHub (gh secret set failed)." }
 
 "$(Get-Date -Format s) saved to GitHub" | Out-File $log -Append -Encoding utf8
