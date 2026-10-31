@@ -426,7 +426,7 @@ def parse_pick(text, count):
         hashtags = hashtags.replace(",", " ").split()
     if not isinstance(hashtags, list):
         hashtags = []
-    return best - 1, str(data.get("caption") or ""), [str(t) for t in hashtags]
+    return best - 1, str(data.get("caption") or ""), clean_hashtags(hashtags)
 
 
 def write_post(headline, verbose=False):
@@ -589,15 +589,38 @@ def wait_for_public_url(url, kind):
     raise RuntimeError(f"media never became available at {url}")
 
 
-def build_caption(post):
-    tags = []
-    for raw in post.get("hashtags", []):
+JUNK_TAGS = {"true", "false", "none", "null", "nan", "undefined", "hashtag",
+             "hashtags", "tag", "tags"}
+MIN_HASHTAGS = 3
+
+
+def clean_hashtags(raw_tags):
+    """Keep only real hashtag words; fall back to defaults if too few survive.
+
+    A live post once went out with "#True #False #None #None..." because the
+    editor model returned non-strings and they were stringified blindly.
+    """
+    tags, seen = [], set()
+    for raw in raw_tags or []:
+        if not isinstance(raw, str):
+            continue
         # "pop culture" would post as #pop plus loose words — collapse it.
-        tag = re.sub(r"[^0-9A-Za-z_]", "", str(raw).lstrip("#"))
-        if tag:
-            tags.append(f"#{tag}")
+        tag = re.sub(r"[^0-9A-Za-z_]", "", raw.lstrip("#"))
+        key = tag.lower()
+        if (len(tag) < 3 or not re.search(r"[A-Za-z]", tag)
+                or key in JUNK_TAGS or key in seen):
+            continue
+        seen.add(key)
+        tags.append(tag)
         if len(tags) >= brand.MAX_HASHTAGS:
             break
+    if len(tags) < MIN_HASHTAGS:
+        tags = list(DEFAULT_HASHTAGS)
+    return tags
+
+
+def build_caption(post):
+    tags = [f"#{t}" for t in clean_hashtags(post.get("hashtags"))]
     caption = clean_text(post["caption"], brand.MAX_CAPTION_CHARS)
     full = f"{caption}\n\n{' '.join(tags)}".strip()
     return full[:2200]
@@ -806,18 +829,21 @@ def decode_pending(issue_body):
 
 def approval_body(pending, video_url):
     post = pending["post"]
-    tags = " ".join(f"#{t}" for t in post.get("hashtags", []))
     media = "video" if pending["kind"] == "video" else "image"
+    # Show the caption exactly as it will be posted, hashtags included — the
+    # first post's junk hashtags weren't visible in the email.
+    caption = "\n".join(f"> {line}" if line else ">"
+                        for line in pending["caption"].splitlines())
     return f"""@{repo_owner()} today's post is ready for review.
 
 **News:** {pending['topic']['title']}
 
+**On screen:**
 > **{post['hook']}**
 > {post['punchline']}
 
-**Caption:** {pending['caption'].split(chr(10))[0]}
-
-{tags}
+**Caption (exactly as it will be posted):**
+{caption}
 
 ▶️ **[Watch the {media}]({video_url})**
 
