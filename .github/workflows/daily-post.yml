@@ -366,6 +366,8 @@ jobs:
       # failed, since the refresh already happened.
       - name: Save refreshed Instagram token
         if: ${{ always() && !inputs.test_run && !inputs.jokes_only }}
+        # Never block today's post over this: the current token keeps working.
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.SECRETS_PAT }}
           TOKEN_FILE: ${{ runner.temp }}/ig_token
