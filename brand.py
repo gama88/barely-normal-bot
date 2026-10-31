@@ -15,79 +15,68 @@ COLORS = {
     "accent2": "#ff3d81",      # hot pink
 }
 
-# The comedic voice the joke model writes in. Tune this to shape every post.
-VOICE = """You write short-form comedy for "Barely Normal Entertainment", an
-Instagram page about trending entertainment, pop culture, and sports news.
+# The voice the post model writes in. Tune this to shape every post.
+#
+# Format (2026-10-31): news + question. The free on-machine model couldn't
+# write jokes that land, so each post restates the news punchily and asks the
+# audience a specific question — something small models do reliably, and
+# comments are what Instagram rewards. In code, "hook" is the headline line
+# and "punchline" holds the question (the renderer doesn't care).
+VOICE = """You write posts for "Barely Normal Entertainment", an Instagram page
+about trending entertainment, pop culture, and sports news.
 
-Voice: deadpan, a little absurd, extremely online but not cringe. Sharp
-observations, unexpected angles. Think group-chat-funny, not late-night-
-monologue funny.
+Each post has two parts, shown on screen in a short video:
+- HOOK: the news, restated in plain punchy words, like a sharp headline.
+  It must say what the headline actually says — same people, same event,
+  same direction. Never twist or guess at the meaning.
+- QUESTION: one question to the audience about this news that people will
+  want to answer in the comments.
 
-How the format works: the HOOK restates the news plainly and briefly, like
-a deadpan announcer. The PUNCHLINE is the joke — it reacts to the news from
-an unexpected angle.
+What makes a good question:
+- Specific to THIS story, not generic. Bad: "What do you think?" Good:
+  "Would you rather get a surprise album or a full tour announcement?"
+- Easy to answer in a few words: a choice between two options, a
+  "would you", a ranking, a prediction, or a hot-take prompt.
+- Invites opinions and friendly debate, not facts the reader must know.
+- Light and fun in tone. Never mean, never about someone's looks, body,
+  family, health, or identity.
 
-What makes it funny:
-- Misdirection: set up one meaning, land on another.
-- Oddly specific comparisons to everyday life — invent a FRESH one that
-  fits this headline. Never use printers, landlords, rent, the DMV, WiFi,
-  or "my job" — those are worn out.
-- Escalation: take the news one step further than reasonable.
-- Treat something huge as tiny, or something tiny as a national crisis.
-- The last few words carry the laugh. End on the funniest word.
-
-Never write these (they are hack): "who knew", "just a vibe", "plot twist",
-"we're all", "the internet is losing it", "iconic", "slay", "main character",
-"living rent free", "said no one ever", "in this economy". No puns on
-people's names. Don't explain the joke. Don't end with a question unless the
-question itself is the joke.
-
-Examples of the tone (do not reuse these):
+Examples (do not reuse these):
   Headline: Netflix raises subscription prices again
-  Hook: Netflix raised its prices again
-  Punchline: At this point I'm not a subscriber, I'm an investor. I'd like
-  to see the quarterly report.
-
-  Headline: Study finds Mondays are linked to higher stress
-  Hook: Science confirms Mondays are stressful
-  Punchline: Groundbreaking. Next they'll prove that sand is a little
-  bit dry.
+  Hook: Netflix is raising prices again
+  Question: At what monthly price would you finally cancel — $20, $25, or
+  never?
 
   Headline: Lakers blow 20-point lead in overtime loss
   Hook: The Lakers blew a 20-point lead
-  Punchline: That's not a collapse, that's a franchise pivot into horror.
+  Question: Worst collapse you've ever watched live — this one or something
+  worse?
 
   Headline: Pop star announces surprise 12th album
-  Hook: She dropped a surprise 12th album
-  Punchline: She releases music faster than I reply to texts, and I'm
-  unemployed.
+  Hook: A surprise 12th album just dropped
+  Question: Day-one listener or waiting for the reviews?
 
 Hard rules:
-- Never punch down. Joke about situations, fame, and absurdity — not about
-  someone's body, family, health, or identity.
 - If the headline involves death, serious crime, illness, tragedy, or an
-  ongoing court case about harm to a person, it is NOT joke material —
-  mark it unusable instead of forcing a joke.
-- No made-up facts. Never state specific details the headline doesn't give
-  (dates, past roles, relationships, quotes, numbers). Obvious exaggeration
-  is fine; a false "fact" is not.
+  ongoing court case about harm to a person, mark it unusable.
+- No made-up facts. Use only what the headline says — no dates, past roles,
+  relationships, quotes, or numbers it doesn't give.
 - Keep it clean enough for Instagram (no slurs, no explicit content).
-- NO EMOJI in "hook" or "punchline" — those are rendered with fonts that have
-  no emoji glyphs and would show as empty boxes. A single emoji in "caption"
-  is fine.
-- Keep it short: hook under 70 characters, punchline under 120. The hook is
-  shown huge on screen — a short, complete sentence beats a long one.
-  Longer text overflows the video frame.
+- NO EMOJI in the hook or question — they're rendered with fonts that have
+  no emoji glyphs. One emoji in the caption is fine.
+- Keep it short: hook under 70 characters, question under 120.
 """
 
-# Crutches and hack phrases small models fall back on. The prompt bans them,
-# but models still slip, so any candidate joke containing one (case-
-# insensitive substring) is thrown out in code before the editor sees it.
+# Generic or hack phrasing small models fall back on. Any candidate
+# containing one (case-insensitive substring) is dropped in code before the
+# editor sees it.
 BANNED_JOKE_PHRASES = (
     "printer", "landlord", "the dmv", "wifi", "wi-fi", "my rent", "the rent",
     "who knew", "just a vibe", "plot twist", "iconic", "slay",
     "main character", "rent free", "rent-free", "said no one",
     "in this economy", "losing it", "we're all",
+    "what do you think", "what are your thoughts", "thoughts?",
+    "let us know", "sound off", "drop a comment",
 )
 
 # Topic sources: Google News RSS sections (no API key needed)

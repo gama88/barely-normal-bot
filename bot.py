@@ -272,48 +272,54 @@ def pick_topics(headlines, posted):
     return picked
 
 
-# ------------------------------------------------------------ joke writer ---
+# ----------------------------------------------------------- post writer ---
 
-# A small model's average joke is weak but its best-of-several is much
-# better, so one call writes several distinct jokes and a second call acts as
-# a strict editor that picks one (or rejects them all).
+# One call writes several candidate posts (hook + audience question) and a
+# second call acts as editor: it checks each hook against the headline and
+# picks the best question. Internally the question is stored as "punchline"
+# so the renderers and post data stay unchanged.
 JOKE_CANDIDATES = 5
-DEFAULT_HASHTAGS = ["memes", "funny", "entertainment", "popculture", "trending"]
+DEFAULT_HASHTAGS = ["entertainment", "popculture", "news", "trending", "celebrity"]
 
 WRITER_FORMAT = f"""
-Write {JOKE_CANDIDATES} different jokes about the headline. Each one must use
-a DIFFERENT angle or technique — not five versions of the same joke.
+Write {JOKE_CANDIDATES} different posts about the headline. Each question must
+take a DIFFERENT angle (a choice, a would-you, a prediction, a ranking...).
 
 Reply with ONLY a JSON object, no other text:
-{{"usable": true, "jokes": [{{"hook": "...", "punchline": "..."}}, ...]}}
-- hook: under 70 characters, no emoji
-- punchline: under 120 characters, no emoji
-If the headline is not joke material per the rules, reply exactly:
-{{"usable": false, "jokes": []}}
+{{"usable": true, "posts": [{{"hook": "...", "question": "..."}}, ...]}}
+- hook: the news in plain punchy words, under 70 characters, no emoji
+- question: one specific question for the comments, under 120 characters,
+  ending with "?", no emoji
+If the headline is not suitable per the rules, reply exactly:
+{{"usable": false, "posts": []}}
 """
 
-EDITOR_SYSTEM = """You are the head writer of a comedy Instagram page that posts
-one joke every day. Your job has two steps.
+EDITOR_SYSTEM = """You are the editor of an entertainment-news Instagram page
+that posts once a day: a short hook stating the news, then a question for
+the audience. Your job has two steps.
 
-Step 1 — safety. A joke is DISQUALIFIED if it:
-- states a specific fact the headline doesn't give (dates, past roles,
-  relationships, quotes, numbers) — obvious exaggeration is fine
-- mocks someone's body, looks, hair, age, family, health, or identity
-- has no joke in it at all (just restates or comments on the news)
+Step 1 — accuracy and safety. A post is DISQUALIFIED if:
+- its hook changes what the headline says (wrong person, wrong event,
+  wrong direction — e.g. "leaves X for Y" when the headline says "leaves Y")
+- it states any fact the headline doesn't give (dates, past roles,
+  relationships, quotes, numbers)
+- it is about or mocks someone's looks, body, family, health, or identity
+- the question is generic ("What do you think?") or can't be answered
+  without facts the reader wouldn't know
 
-Step 2 — quality. Among the jokes that are NOT disqualified, pick the
-funniest: the most surprising angle, the tightest wording, the strongest
-last few words. It does not need to be perfect — the page has to post
-every day, so choose the best one available.
+Step 2 — quality. Among the posts NOT disqualified, pick the one whose
+question people would most want to answer in the comments: specific to this
+story, easy to answer in a few words, fun to argue about. It does not need
+to be perfect — choose the best one available.
 
-Choose 0 ONLY if every single joke is disqualified in step 1.
+Choose 0 ONLY if every single post is disqualified in step 1.
 
-Then write a 1-2 sentence Instagram caption that continues the bit without
-repeating the punchline (one emoji allowed), and 5-8 single-word hashtags
-without the # symbol.
+Then write a 1-2 sentence Instagram caption that adds a little context from
+the headline (no invented facts) and invites people to answer in the
+comments (one emoji allowed), and 5-8 single-word hashtags without the #.
 
 Reply with ONLY a JSON object, no other text:
-{"best": <joke number, or 0>, "caption": "...", "hashtags": ["..."]}"""
+{"best": <post number, or 0>, "caption": "...", "hashtags": ["..."]}"""
 
 
 def call_model(messages, temperature=0.9, max_tokens=400, url=None):
@@ -376,14 +382,19 @@ def parse_candidates(text):
     if not as_bool(data.get("usable")):
         return False, []
     jokes = []
-    for item in data.get("jokes") or []:
+    for item in data.get("posts") or data.get("jokes") or []:
         if not isinstance(item, dict):
             continue
         # Enforce limits in code — models don't reliably count characters.
         hook = clean_text(str(item.get("hook") or ""), brand.MAX_HOOK_CHARS)
-        punch = clean_text(str(item.get("punchline") or ""),
+        punch = clean_text(str(item.get("question") or item.get("punchline")
+                               or ""),
                            brand.MAX_PUNCH_CHARS)
         if not (hook and punch):
+            continue
+        if not punch.rstrip().endswith("?"):
+            # Not a question — the model slid back into writing a joke.
+            print(f"  dropped a candidate that isn't a question: {punch!r}")
             continue
         text = f"{hook} {punch}".lower().replace("’", "'")
         hack = next((p for p in brand.BANNED_JOKE_PHRASES if p in text), None)
@@ -436,12 +447,12 @@ def write_post(headline, verbose=False):
         for n, j in enumerate(jokes, 1):
             print(f"  {n}. {j['hook']} / {j['punchline']}")
 
-    numbered = "\n".join(f"{n}. HOOK: {j['hook']}\n   PUNCHLINE: {j['punchline']}"
+    numbered = "\n".join(f"{n}. HOOK: {j['hook']}\n   QUESTION: {j['punchline']}"
                          for n, j in enumerate(jokes, 1))
     try:
         index, caption, hashtags = parse_pick(call_model(
             [{"role": "system", "content": EDITOR_SYSTEM},
-             {"role": "user", "content": f"{news}\n\nJokes:\n{numbered}"}],
+             {"role": "user", "content": f"{news}\n\nPosts:\n{numbered}"}],
             temperature=0.2, max_tokens=300, url=EDITOR_LLM_URL), len(jokes))
     except (ValueError, RuntimeError) as exc:
         # A broken editor shouldn't sink an otherwise good batch.

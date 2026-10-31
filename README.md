@@ -10,13 +10,14 @@ aggregators.
 1. **Trending topics** — pulls the day's headlines from Google News RSS
    (entertainment, sports, top stories — no API key needed). Tragic or
    sensitive headlines are filtered out (`BLOCKED_WORDS` in `brand.py`).
-2. **The joke** — an LLM writes an original hook + punchline + caption in
-   the brand voice defined in `brand.py`, and can decline a headline it
-   shouldn't joke about. The model is **Qwen3-4B-Instruct** (open source,
-   Apache-2.0), run by llama.cpp directly on the GitHub Actions machine — no
-   API, no key, no account, no cost, and nothing external that can be
-   retired. Both are pinned and the model is SHA-256 verified; the ~2.4 GB
-   download is cached between runs.
+2. **The post** — a small open-source model writes 5 candidate posts, each
+   a punchy hook stating the news plus a specific question for the comments
+   (the free models couldn't write jokes that land, so the format is news +
+   question). A second, larger model acts as editor: it disqualifies any hook
+   that misstates the headline or invents facts, picks the best question, and
+   writes the caption. Writer Qwen3.5-4B, editor Qwen3.5-9B (Apache-2.0), run
+   by llama.cpp on the GitHub Actions machine — no API, key, or cost. Models
+   are pinned and SHA-256 verified; downloads are cached between runs.
 3. **The visual** — Blender (headless) renders a 7-second vertical reel:
    3D text, brand colors, floating shapes, slow zoom. If Blender fails, a
    Pillow static card is rendered instead so the daily post never dies.
