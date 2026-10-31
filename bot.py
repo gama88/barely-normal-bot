@@ -531,7 +531,7 @@ def find_blender():
     return shutil.which("blender")
 
 
-def render_reel(post, work_dir):
+def render_reel(post, work_dir, feed=None):
     """Render the Blender reel + add a silent audio track. None on failure."""
     blender = find_blender()
     if not blender:
@@ -541,6 +541,7 @@ def render_reel(post, work_dir):
         "hook": post["hook"],
         "punchline": post["punchline"],
         "handle": brand.HANDLE,
+        "feed": feed,
         "colors": brand.COLORS,
         "font_candidates": FONT_CANDIDATES,
         "out_dir": str(work_dir),
@@ -744,7 +745,7 @@ def make_post(topic, work_dir, dry_run):
         return None
 
     started = time.time()
-    media = render_reel(post, work_dir)
+    media = render_reel(post, work_dir, feed=topic.get("feed"))
     print(f"timing: render {time.time() - started:.0f}s")
     kind = "video"
     if media is None:
