@@ -130,7 +130,7 @@ def check_token():
                                     "access_token": token},
                             timeout=30)
     except requests.RequestException as exc:
-        print(f"warning: couldn't reach Instagram to check token: {exc}")
+        print(f"warning: couldn't reach Instagram to check token: {scrub(exc)}")
         return
     if resp.ok:
         print(f"token ok for @{resp.json().get('username', '?')}")
@@ -160,14 +160,34 @@ def check_token():
     sys.exit(1)
 
 
+_SECRETS_TO_SCRUB = set()
+_TOKEN_IN_URL = re.compile(r"(access_token=)[^&\s'\"]+")
+
+
+def scrub(text):
+    """Remove access tokens from anything about to be printed.
+
+    This repo is public, so its Actions logs are too. requests puts the full
+    URL — access_token included — into error messages. GitHub masks the
+    stored secret, but not a freshly refreshed token, so scrub explicitly.
+    """
+    text = _TOKEN_IN_URL.sub(r"\1[redacted]", str(text))
+    for secret in _SECRETS_TO_SCRUB:
+        if secret:
+            text = text.replace(secret, "[redacted]")
+    return text
+
+
 def refresh_token():
     """Extend the long-lived token's 60-day expiry. Never fails the run.
 
-    Refreshing extends the expiry from today, so a daily run keeps the token
-    alive indefinitely — as long as Instagram keeps returning the same token
-    string. If it ever returns a different one, the secret must be updated.
+    Instagram returns a NEW token string on refresh. If TOKEN_OUT_FILE is set
+    (the workflow does this), the new token is written there — never printed —
+    and a later workflow step saves it as the IG_ACCESS_TOKEN secret, so the
+    token renews itself indefinitely.
     """
     token = os.environ["IG_ACCESS_TOKEN"]
+    _SECRETS_TO_SCRUB.add(token)
     try:
         resp = requests.get("https://graph.instagram.com/refresh_access_token",
                             params={"grant_type": "ig_refresh_token",
@@ -177,15 +197,26 @@ def refresh_token():
         data = resp.json()
     except (requests.RequestException, ValueError) as exc:
         # Expected for tokens under 24h old; harmless otherwise.
-        print(f"note: token refresh skipped ({exc})")
+        print(f"note: token refresh skipped ({scrub(exc)})")
         return
     days = int(data.get("expires_in", 0)) // 86400
-    if data.get("access_token") and data["access_token"] != token:
+    new_token = (data.get("access_token") or "").strip()
+    _SECRETS_TO_SCRUB.add(new_token)
+    if not new_token or new_token == token:
+        print(f"token refreshed, valid for {days} more days")
+        return
+
+    out_file = os.environ.get("TOKEN_OUT_FILE")
+    if out_file:
+        fd = os.open(out_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="ascii", newline="") as f:
+            f.write(new_token)   # exact bytes: no newline, no BOM
+        print(f"token refreshed ({days} days); new token handed to the "
+              f"workflow to save")
+    else:
         print(f"WARNING: Instagram issued a NEW token on refresh. The current "
               f"secret still works for now, but update IG_ACCESS_TOKEN within "
               f"{days} days or posting will stop.")
-    else:
-        print(f"token refreshed, valid for {days} more days")
 
 
 def load_posted():
@@ -229,7 +260,7 @@ def fetch_headlines():
             resp.raise_for_status()
             root = ET.fromstring(resp.content)
         except (requests.RequestException, ET.ParseError) as exc:
-            print(f"warning: feed '{feed_name}' failed: {exc}")
+            print(f"warning: feed '{feed_name}' failed: {scrub(exc)}")
             continue
         for item in root.findall(".//item")[:15]:
             title = (item.findtext("title") or "").strip()
@@ -346,7 +377,7 @@ def call_model(messages, temperature=0.9, max_tokens=400, url=None):
             return resp.json()["choices"][0]["message"]["content"]
         except (requests.RequestException, KeyError, IndexError,
                 ValueError) as exc:
-            print(f"warning: model call {attempt} failed: {exc}")
+            print(f"warning: model call {attempt} failed: {scrub(exc)}")
             last_error = exc
     raise RuntimeError(f"joke model unavailable: {last_error}")
 
@@ -456,7 +487,7 @@ def write_post(headline, verbose=False):
             temperature=0.2, max_tokens=300, url=EDITOR_LLM_URL), len(jokes))
     except (ValueError, RuntimeError) as exc:
         # A broken editor shouldn't sink an otherwise good batch.
-        print(f"warning: editor failed ({exc}); using the first joke")
+        print(f"warning: editor failed ({scrub(exc)}); using the first joke")
         index, caption, hashtags = 0, "", []
 
     if index is None:
@@ -526,7 +557,7 @@ def render_reel(post, work_dir):
             capture_output=True, text=True, timeout=BLENDER_TIMEOUT_SECONDS,
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        print(f"blender render failed to run ({exc}) — falling back to card")
+        print(f"blender render failed to run ({scrub(exc)}) — falling back to card")
         return None
     if result.returncode != 0 or "RENDER_OK" not in result.stdout:
         print("blender render failed — falling back to static card")
@@ -550,7 +581,7 @@ def render_reel(post, work_dir):
             capture_output=True, text=True, timeout=FFMPEG_TIMEOUT_SECONDS,
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        print(f"warning: silent-audio mux unavailable ({exc}), using video as-is")
+        print(f"warning: silent-audio mux unavailable ({scrub(exc)}), using video as-is")
         return raw
     if mux.returncode != 0:
         print("warning: silent-audio mux failed, using video as-is")
@@ -584,7 +615,7 @@ def wait_for_public_url(url, kind):
                 return
             print(f"waiting for media: HTTP {resp.status_code} {ctype}")
         except requests.RequestException as exc:
-            print(f"waiting for media: {exc}")
+            print(f"waiting for media: {scrub(exc)}")
         time.sleep(10)
     raise RuntimeError(f"media never became available at {url}")
 
@@ -663,7 +694,7 @@ def post_to_instagram(kind, media_url, caption, before_publish=None):
             errors += 1
             if errors > MAX_CONSECUTIVE_POLL_ERRORS:
                 raise
-            print(f"warning: status poll failed ({exc}), retrying")
+            print(f"warning: status poll failed ({scrub(exc)}), retrying")
             time.sleep(10)
             continue
         code = status.json().get("status_code")
@@ -707,7 +738,7 @@ def make_post(topic, work_dir, dry_run):
         if not dry_run:
             raise
         # Locally there's usually no model server running; preview anyway.
-        print(f"note: {exc} — using a placeholder joke for the preview")
+        print(f"note: {scrub(exc)} — using a placeholder joke for the preview")
         post = canned_post(topic)
     if post is None:
         return None
@@ -779,7 +810,7 @@ def prepare(dry_run):
                     stage_for_pages(topic, post, kind, media, caption)
                 return
             except Exception as exc:
-                print(f"warning: topic failed ({topic['title']!r}): {exc}")
+                print(f"warning: topic failed ({topic['title']!r}): {scrub(exc)}")
 
     print("error: all attempted topics failed")
     sys.exit(1)
@@ -997,11 +1028,11 @@ def publish(base_url):
         wait_for_public_url(url, kind)
         media_id = post_to_instagram(kind, url, caption, before_publish=record)
     except PublishedError as exc:
-        print(f"error: {exc}")
+        print(f"error: {scrub(exc)}")
         print("The post may be live; it's recorded so it won't be repeated.")
         sys.exit(EXIT_MAYBE_PUBLISHED)
     except Exception as exc:
-        print(f"error: publish failed before posting: {exc}")
+        print(f"error: publish failed before posting: {scrub(exc)}")
         sys.exit(1)
 
     print(f"Posted! media id {media_id}")
@@ -1010,7 +1041,7 @@ def publish(base_url):
         insights.set_media_id(topic["key"], media_id)
         PENDING_FILE.unlink()
     except Exception as exc:
-        print(f"warning: post-publish bookkeeping failed ({exc}); the media "
+        print(f"warning: post-publish bookkeeping failed ({scrub(exc)}); the media "
               f"id will be recovered from the caption on the next run")
 
 
@@ -1049,7 +1080,7 @@ def main():
         try:
             insights.collect(os.environ["IG_ACCESS_TOKEN"])
         except Exception as exc:   # analytics must never block posting
-            print(f"warning: insights collection failed: {exc}")
+            print(f"warning: insights collection failed: {scrub(exc)}")
         prepare(dry_run=False)
     elif "--request-approval" in args:
         idx = args.index("--request-approval")

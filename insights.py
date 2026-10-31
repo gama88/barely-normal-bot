@@ -18,9 +18,21 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import re
+
 import requests
 
 HISTORY_FILE = Path(__file__).parent / "history.json"
+
+# This repo's Actions logs are public: requests error messages contain the
+# full URL, access_token included, so strip it before printing.
+_TOKEN_IN_URL = re.compile(r"(access_token=)[^&\s'\"]+")
+
+
+def scrub(text):
+    return _TOKEN_IN_URL.sub(r"\1[redacted]", str(text))
+
+
 GRAPH = "https://graph.instagram.com/v21.0"
 
 MIN_AGE = timedelta(hours=20)    # too-fresh numbers are noise
@@ -131,7 +143,7 @@ def resolve_missing_ids(history, token):
         recent = _get("me/media", token, fields="id,caption,timestamp",
                       limit=50).get("data", [])
     except requests.RequestException as exc:
-        print(f"warning: couldn't list recent media to recover ids: {exc}")
+        print(f"warning: couldn't list recent media to recover ids: {scrub(exc)}")
         return
     by_caption = {m.get("caption"): m["id"] for m in recent if m.get("caption")}
     for rec in missing:
@@ -159,7 +171,7 @@ def collect(token):
             rec["insights"] = fetch_media_insights(rec["media_id"], rec["kind"],
                                                    token)
         except requests.RequestException as exc:
-            print(f"warning: insights failed for {rec['title']!r}: {exc}")
+            print(f"warning: insights failed for {rec['title']!r}: {scrub(exc)}")
             continue
         rec["insights_at"] = now.isoformat(timespec="seconds")
         if age >= FINAL_AGE:

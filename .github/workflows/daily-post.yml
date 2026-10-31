@@ -335,7 +335,30 @@ jobs:
         env:
           IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
           IG_USER_ID: ${{ secrets.IG_USER_ID }}
+          TOKEN_OUT_FILE: ${{ runner.temp }}/ig_token
         run: xvfb-run -a python bot.py --prepare
+
+      # Instagram returns a NEW token on every refresh. bot.py writes it to a
+      # private temp file (never the log); this saves it as the secret using
+      # SECRETS_PAT, a fine-grained token limited to this repo's secrets —
+      # the built-in GITHUB_TOKEN can't write secrets. Runs even if the post
+      # failed, since the refresh already happened.
+      - name: Save refreshed Instagram token
+        if: ${{ always() && !inputs.test_run && !inputs.jokes_only }}
+        env:
+          GH_TOKEN: ${{ secrets.SECRETS_PAT }}
+          TOKEN_FILE: ${{ runner.temp }}/ig_token
+        run: |
+          set -euo pipefail
+          if [ ! -s "$TOKEN_FILE" ]; then echo "no new token to save"; exit 0; fi
+          echo "::add-mask::$(cat "$TOKEN_FILE")"
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::warning::Instagram issued a new token but SECRETS_PAT isn't set, so it wasn't saved. The current token still works until it expires (~60 days after it was created)."
+            rm -f "$TOKEN_FILE"; exit 0
+          fi
+          gh secret set IG_ACCESS_TOKEN -R "$GITHUB_REPOSITORY" < "$TOKEN_FILE"
+          rm -f "$TOKEN_FILE"
+          echo "saved the refreshed Instagram token"
 
       # Instagram's API only accepts media from a public URL, so the rendered
       # video is served from GitHub Pages. Each deploy replaces the whole
