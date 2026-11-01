@@ -17,10 +17,10 @@
       "shares": 0,
       "saved": 0,
       "total_interactions": 1,
-      "ig_reels_avg_watch_time": 8731,
+      "ig_reels_avg_watch_time": 9479,
       "reels_skip_rate": 69.6
     },
-    "insights_at": "2026-10-31T21:51:44+00:00",
+    "insights_at": "2026-11-01T21:10:45+00:00",
     "final": false
   },
   {
@@ -33,8 +33,18 @@
     "kind": "video",
     "media_id": "17879255463567888",
     "posted_at": "2026-10-31T22:24:27+00:00",
-    "insights": null,
-    "insights_at": null,
+    "insights": {
+      "views": 8,
+      "reach": 8,
+      "likes": 1,
+      "comments": 0,
+      "shares": 0,
+      "saved": 0,
+      "total_interactions": 1,
+      "ig_reels_avg_watch_time": 7393,
+      "reels_skip_rate": 85.7
+    },
+    "insights_at": "2026-11-01T21:10:45+00:00",
     "final": false
   }
 ]
