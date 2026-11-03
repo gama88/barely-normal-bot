@@ -10,17 +10,17 @@
     "media_id": "18102675032570825",
     "posted_at": "2026-10-30T21:22:49+00:00",
     "insights": {
-      "views": 44,
-      "reach": 23,
+      "views": 46,
+      "reach": 24,
       "likes": 0,
       "comments": 1,
       "shares": 0,
       "saved": 0,
       "total_interactions": 1,
-      "ig_reels_avg_watch_time": 9479,
-      "reels_skip_rate": 69.6
+      "ig_reels_avg_watch_time": 9626,
+      "reels_skip_rate": 66.7
     },
-    "insights_at": "2026-11-01T21:10:45+00:00",
+    "insights_at": "2026-11-02T23:53:24+00:00",
     "final": false
   },
   {
@@ -34,17 +34,17 @@
     "media_id": "17879255463567888",
     "posted_at": "2026-10-31T22:24:27+00:00",
     "insights": {
-      "views": 8,
-      "reach": 8,
-      "likes": 1,
+      "views": 13,
+      "reach": 9,
+      "likes": 2,
       "comments": 0,
       "shares": 0,
       "saved": 0,
-      "total_interactions": 1,
-      "ig_reels_avg_watch_time": 7393,
-      "reels_skip_rate": 85.7
+      "total_interactions": 2,
+      "ig_reels_avg_watch_time": 8131,
+      "reels_skip_rate": 87.5
     },
-    "insights_at": "2026-11-01T21:10:45+00:00",
+    "insights_at": "2026-11-02T23:53:24+00:00",
     "final": false
   }
 ]
