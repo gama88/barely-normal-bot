@@ -10,17 +10,17 @@
     "media_id": "18102675032570825",
     "posted_at": "2026-10-30T21:22:49+00:00",
     "insights": {
-      "views": 46,
-      "reach": 24,
+      "views": 47,
+      "reach": 25,
       "likes": 0,
       "comments": 1,
       "shares": 0,
       "saved": 0,
       "total_interactions": 1,
-      "ig_reels_avg_watch_time": 9728,
-      "reels_skip_rate": 66.7
+      "ig_reels_avg_watch_time": 9522,
+      "reels_skip_rate": 64
     },
-    "insights_at": "2026-11-04T22:36:40+00:00",
+    "insights_at": "2026-11-05T22:41:40+00:00",
     "final": false
   },
   {
@@ -34,17 +34,17 @@
     "media_id": "17879255463567888",
     "posted_at": "2026-10-31T22:24:27+00:00",
     "insights": {
-      "views": 13,
-      "reach": 9,
+      "views": 17,
+      "reach": 10,
       "likes": 2,
       "comments": 0,
       "shares": 0,
       "saved": 0,
       "total_interactions": 2,
-      "ig_reels_avg_watch_time": 8088,
-      "reels_skip_rate": 87.5
+      "ig_reels_avg_watch_time": 8009,
+      "reels_skip_rate": 77.8
     },
-    "insights_at": "2026-11-04T22:36:40+00:00",
+    "insights_at": "2026-11-05T22:41:40+00:00",
     "final": false
   },
   {
@@ -58,17 +58,17 @@
     "media_id": "18191171134409105",
     "posted_at": "2026-11-03T00:39:26+00:00",
     "insights": {
-      "views": 15,
-      "reach": 13,
+      "views": 18,
+      "reach": 15,
       "likes": 0,
       "comments": 0,
       "shares": 0,
       "saved": 0,
       "total_interactions": 0,
-      "ig_reels_avg_watch_time": 5140,
-      "reels_skip_rate": 76.9
+      "ig_reels_avg_watch_time": 4853,
+      "reels_skip_rate": 73.3
     },
-    "insights_at": "2026-11-04T22:36:40+00:00",
+    "insights_at": "2026-11-05T22:41:40+00:00",
     "final": false
   }
 ]
