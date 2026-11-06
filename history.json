@@ -20,8 +20,8 @@
       "ig_reels_avg_watch_time": 9522,
       "reels_skip_rate": 64
     },
-    "insights_at": "2026-11-05T22:41:40+00:00",
-    "final": false
+    "insights_at": "2026-11-06T22:06:17+00:00",
+    "final": true
   },
   {
     "key": "d0d71f60baf9c54f",
@@ -44,7 +44,7 @@
       "ig_reels_avg_watch_time": 8009,
       "reels_skip_rate": 77.8
     },
-    "insights_at": "2026-11-05T22:41:40+00:00",
+    "insights_at": "2026-11-06T22:06:17+00:00",
     "final": false
   },
   {
@@ -68,7 +68,7 @@
       "ig_reels_avg_watch_time": 4853,
       "reels_skip_rate": 73.3
     },
-    "insights_at": "2026-11-05T22:41:40+00:00",
+    "insights_at": "2026-11-06T22:06:17+00:00",
     "final": false
   }
 ]
