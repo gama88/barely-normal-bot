@@ -107,6 +107,13 @@ def draw_shape(vo, resources):
         cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
         draw.polygon([(cx, y0), (x1, cy), (cx, y1), (x0, cy)], fill=fill,
                      outline=outline)
+    elif vo.shape == "polygon":
+        x0, y0, x1, y1 = box
+        pts = [(x0 + px * (x1 - x0), y0 + py * (y1 - y0)) for px, py in vo.points]
+        draw.polygon(pts, fill=fill, outline=outline, width=line or 1)
+    elif vo.shape == "arc":
+        draw.arc(box, vo.start_angle, vo.end_angle, fill=outline or fill,
+                 width=line or k * 8)
     else:
         raise ValueError(f"unknown shape {vo.shape!r}")
     sprite = big.resize((w + 2 * pad, h + 2 * pad), Image.LANCZOS)

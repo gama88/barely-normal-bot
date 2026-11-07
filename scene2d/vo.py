@@ -48,7 +48,7 @@ class LabelVO(ItemVO):
 class ShapeVO(ItemVO):
     TYPE = "shape"
 
-    shape: str = "rect"              # rect | ellipse | ring | diamond
+    shape: str = "rect"              # rect | ellipse | ring | diamond | polygon | arc
     width: float = 100.0
     height: float = 100.0
     radius: float = 0.0              # corner radius (rect)
@@ -57,6 +57,9 @@ class ShapeVO(ItemVO):
     outline_width: float = 0.0
     glow: float = 0.0
     glow_color: tuple = None         # defaults to fill/outline colour
+    points: list = None              # polygon: [(x, y), ...] as fractions of the box
+    start_angle: float = 0.0         # arc: degrees clockwise from 3 o'clock
+    end_angle: float = 360.0
 
 
 @dataclass
@@ -109,7 +112,9 @@ def item_from_dict(data):
         data["items"] = [item_from_dict(child) for child in data["items"]]
     # JSON turns tuples into lists; Pillow wants tuples for colours.
     for key, value in data.items():
-        if isinstance(value, list) and key not in ("items", "scripts"):
+        if key == "points" and value is not None:
+            data[key] = [tuple(pt) for pt in value]
+        elif isinstance(value, list) and key not in ("items", "scripts"):
             data[key] = tuple(value)
     return cls(**data)
 

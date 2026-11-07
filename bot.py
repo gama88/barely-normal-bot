@@ -533,21 +533,26 @@ def find_blender():
     return shutil.which("blender")
 
 
-def render_reel(post, work_dir, feed=None):
+def render_reel(post, work_dir, feed=None, title=""):
     """Render the reel with the renderer brand.RENDERER picks. None on failure."""
     if brand.RENDERER == "blender":
         return render_reel_blender(post, work_dir, feed)
-    return render_reel_2d(post, work_dir, feed)
+    return render_reel_2d(post, work_dir, feed, title)
 
 
-def render_reel_2d(post, work_dir, feed=None):
-    """Lay the post out as a scene2d scene and encode it (seconds, not minutes)."""
+def render_reel_2d(post, work_dir, feed=None, title=""):
+    """Lay the post out as a scene2d scene and encode it (seconds, not minutes).
+
+    The headline picks the illustration (visuals.py), so the video shows
+    what the story is about.
+    """
     font = next((p for p in FONT_CANDIDATES if os.path.exists(p)), "")
     try:
         scene = post_scene.build_scene(
             post, colors=brand.COLORS, font=font, handle=brand.HANDLE,
             fps=brand.REEL["fps"], seconds=brand.REEL["seconds"], feed=feed,
-            seed=int(time.time()) % 100000)
+            title=title, seed=int(time.time()) % 100000)
+        print(f"visual:  {scene.root.items[1].items[0].name.removeprefix('stage_')}")
         # The scene is plain data; keep it next to the video for debugging.
         (work_dir / "scene.json").write_text(
             json.dumps(scene2d.scene_to_dict(scene)), encoding="utf-8")
@@ -772,7 +777,8 @@ def make_post(topic, work_dir, dry_run):
         return None
 
     started = time.time()
-    media = render_reel(post, work_dir, feed=topic.get("feed"))
+    media = render_reel(post, work_dir, feed=topic.get("feed"),
+                        title=topic.get("title", ""))
     print(f"timing: render {time.time() - started:.0f}s")
     kind = "video"
     if media is None:
