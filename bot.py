@@ -41,6 +41,8 @@ import requests
 import brand
 import card_fallback
 import insights
+import post_scene
+import scene2d
 
 POSTED_FILE = Path(__file__).parent / "posted.json"
 PENDING_FILE = Path(__file__).parent / "pending.json"
@@ -532,6 +534,31 @@ def find_blender():
 
 
 def render_reel(post, work_dir, feed=None):
+    """Render the reel with the renderer brand.RENDERER picks. None on failure."""
+    if brand.RENDERER == "blender":
+        return render_reel_blender(post, work_dir, feed)
+    return render_reel_2d(post, work_dir, feed)
+
+
+def render_reel_2d(post, work_dir, feed=None):
+    """Lay the post out as a scene2d scene and encode it (seconds, not minutes)."""
+    font = next((p for p in FONT_CANDIDATES if os.path.exists(p)), "")
+    try:
+        scene = post_scene.build_scene(
+            post, colors=brand.COLORS, font=font, handle=brand.HANDLE,
+            fps=brand.REEL["fps"], seconds=brand.REEL["seconds"], feed=feed,
+            seed=int(time.time()) % 100000)
+        # The scene is plain data; keep it next to the video for debugging.
+        (work_dir / "scene.json").write_text(
+            json.dumps(scene2d.scene_to_dict(scene)), encoding="utf-8")
+        return scene2d.render_video(scene, work_dir / "reel_2d.mp4",
+                                    timeout=FFMPEG_TIMEOUT_SECONDS)
+    except Exception as exc:          # any failure -> the static card instead
+        print(f"2d render failed ({scrub(exc)}) — falling back to card")
+        return None
+
+
+def render_reel_blender(post, work_dir, feed=None):
     """Render the Blender reel + add a silent audio track. None on failure."""
     blender = find_blender()
     if not blender:

@@ -18,9 +18,15 @@ aggregators.
    writes the caption. Writer Qwen3.5-4B, editor Qwen3.5-9B (Apache-2.0), run
    by llama.cpp on the GitHub Actions machine — no API, key, or cost. Models
    are pinned and SHA-256 verified; downloads are cached between runs.
-3. **The visual** — Blender (headless) renders a 7-second vertical reel:
-   3D text, brand colors, floating shapes, slow zoom. If Blender fails, a
-   Pillow static card is rendered instead so the daily post never dies.
+3. **The visual** — a 7-second vertical reel from `scene2d`, a small 2D
+   scene engine built on the same architecture as
+   [Overlap2D](https://github.com/gama88/overlap2d): `post_scene.py` lays the
+   post out as data (a scene of labels, shapes, and images with scripts like
+   `pop_in` and `bob`, also saved as `scene.json`), and the engine plays it
+   through Script -> Composite -> Render systems. It renders in under a
+   minute with Pillow + ffmpeg. Set `RENDERER = "blender"` in `brand.py` for
+   the older 3D Blender reel (~18 min on CI). If rendering fails, a Pillow
+   static card is posted instead so the daily post never dies.
 4. **Publish** — Instagram's API only accepts media from a public URL, so the
    workflow deploys the rendered file to this repo's GitHub Pages site, then
    posts it as a Reel (or image) via the official Instagram API. Each deploy
@@ -90,7 +96,6 @@ python bot.py --dry-run
 
 Dry run fetches real headlines, writes the post (uses a placeholder joke if
 no llama-server is running at `LLM_URL`), renders the visual, and saves a preview to
-`out/` — nothing is published. Without Blender installed locally you'll get
-the static-card fallback; install Blender (blender.org) to preview the reel.
+`out/` — nothing is published. The 2D reel needs only Pillow and ffmpeg.
 Real posting only runs on GitHub Actions, since the media is served from
 GitHub Pages.

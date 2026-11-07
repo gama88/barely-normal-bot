@@ -166,7 +166,12 @@ BLOCKED_PHRASES = (
     "lost his battle", "lost their battle", "life support", "in memoriam",
 )
 
-# Video settings for the Blender reel
+# Which renderer makes the reel:
+#   "2d"      scene2d + Pillow (post_scene.py): ~1 minute on CI
+#   "blender" blender_scene.py: 3D, ~18 minutes on CI's software renderer
+RENDERER = "2d"
+
+# Video settings for the reel
 REEL = {
     "width": 1080,
     "height": 1920,
